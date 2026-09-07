@@ -434,6 +434,10 @@ fn build_test_curl(provider: &Provider, model: &str) -> Result<String, String> {
         }
     }
 
+    for (name, value) in provider.resolved_extra_headers() {
+        cmd.push_str(&format!("  -H '{name}: {value}' \\\n"));
+    }
+
     cmd.push_str(&format!("  -d '{body}'"));
     Ok(cmd)
 }
@@ -504,6 +508,7 @@ mod tests {
                 port: Some(8003),
                 test_model: None,
                 max_tokens_cap: None,
+                extra_headers: Default::default(),
             },
         );
 

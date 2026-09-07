@@ -486,14 +486,12 @@ async fn try_providers(
             }
         };
         let model_override = Some(pipeline.req_model_hint.clone()).filter(|m| !m.is_empty());
-        let request_thinking = ctx
-            .req_json
-            .is_some_and(|j| {
-                j.get("thinking")
-                    .and_then(|t| t.get("type"))
-                    .and_then(|t| t.as_str())
-                    .is_some_and(|t| matches!(t, "enabled" | "adaptive"))
-            });
+        let request_thinking = ctx.req_json.is_some_and(|j| {
+            j.get("thinking")
+                .and_then(|t| t.get("type"))
+                .and_then(|t| t.as_str())
+                .is_some_and(|t| matches!(t, "enabled" | "adaptive"))
+        });
         return if ctx.is_stream {
             handle_streaming_response(
                 response,
@@ -765,14 +763,13 @@ async fn handle_streaming_response(
     // the raw SSE untouched. Usage is still tracked by parsing the OpenAI
     // usage events (final chunk for chat, response.completed for Responses).
     if passthrough {
-        let raw: std::pin::Pin<
-            Box<dyn futures::Stream<Item = std::io::Result<Bytes>> + Send>,
-        > = Box::pin(response.bytes_stream().map(|r| {
-            r.map_err(|e| {
-                tracing::error!("Stream error: {e}");
-                std::io::Error::other(e)
-            })
-        }));
+        let raw: std::pin::Pin<Box<dyn futures::Stream<Item = std::io::Result<Bytes>> + Send>> =
+            Box::pin(response.bytes_stream().map(|r| {
+                r.map_err(|e| {
+                    tracing::error!("Stream error: {e}");
+                    std::io::Error::other(e)
+                })
+            }));
         let tracked = track_tokens_in_stream(raw, ctx, extract_openai_usage);
         let body = Body::from_stream(tracked);
         return Response::builder()
@@ -798,9 +795,10 @@ async fn handle_streaming_response(
             // `request_thinking` asks Gemini for readable thinking summaries;
             // thought steps (with their signatures) are always surfaced so
             // the client can replay them on the next tool-calling turn.
-            ApiFormat::Gemini => {
-                Box::pin(transform::gemini_stream_to_anthropic(response, request_thinking))
-            }
+            ApiFormat::Gemini => Box::pin(transform::gemini_stream_to_anthropic(
+                response,
+                request_thinking,
+            )),
         };
 
     // Track first, rewrite second: stats must see what actually served the
@@ -949,12 +947,12 @@ fn needs_reasoning_injection(body: &Bytes) -> bool {
     msgs.iter().any(|msg| {
         msg.get("role").and_then(|r| r.as_str()) == Some("assistant")
             && msg.get("reasoning_content").is_none()
-            && msg.get("tool_calls")
+            && msg
+                .get("tool_calls")
                 .and_then(|t| t.as_array())
                 .is_some_and(|calls| !calls.is_empty())
     })
 }
-
 
 /// Shared SSE passthrough loop: hands each `data:` payload to `extract`
 /// (which records usage/model onto `finalizer`), then yields the raw bytes
@@ -1080,13 +1078,12 @@ fn extract_openai_usage(finalizer: &mut StreamFinalizer, data: &str) {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::Router;
     use crate::config::{ApiFormat, AppConfig, OpenAiApiVersion, Provider};
     use crate::proxy::metrics::RequestLog;
+    use axum::Router;
     use indexmap::IndexMap;
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
@@ -1109,6 +1106,7 @@ mod tests {
             port: None,
             test_model: None,
             max_tokens_cap: None,
+            extra_headers: HashMap::new(),
         }
     }
 
@@ -1194,9 +1192,9 @@ mod tests {
     }
     #[tokio::test]
     async fn buffered_openai_passthrough_returns_upstream_bytes_untouched() {
+        use axum::Json;
         use axum::http::StatusCode as AxumStatus;
         use axum::routing::post;
-        use axum::Json;
 
         // Fake upstream that reflects the request's model back, echoing the
         // exact request body as a marker so the test can detect rewrites.
@@ -1220,10 +1218,8 @@ mod tests {
             )
         }
 
-        let proxy_addr = spawn_passthrough_proxy(
-            Router::new().route("/v1/chat/completions", post(chat)),
-        )
-        .await;
+        let proxy_addr =
+            spawn_passthrough_proxy(Router::new().route("/v1/chat/completions", post(chat))).await;
 
         let body = r#"{"model":"deepseek-v4-flash","max_tokens":1,"messages":[{"role":"user","content":"ping"}]}"#;
         let resp = reqwest::Client::new()
@@ -1268,10 +1264,8 @@ mod tests {
                 .unwrap()
         }
 
-        let proxy_addr = spawn_passthrough_proxy(
-            Router::new().route("/v1/chat/completions", post(chat)),
-        )
-        .await;
+        let proxy_addr =
+            spawn_passthrough_proxy(Router::new().route("/v1/chat/completions", post(chat))).await;
 
         let resp = reqwest::Client::new()
             .post(format!("http://{proxy_addr}/v1/chat/completions"))
@@ -1286,7 +1280,10 @@ mod tests {
         let text = resp.text().await.unwrap();
         // Raw upstream SSE relayed byte-for-byte: the unknown marker survives
         // (a re-encode would drop it) and the finish_reason chunk order is kept.
-        assert!(text.contains("\"x_marker\":\"keep\""), "raw chunk was re-encoded: {text}");
+        assert!(
+            text.contains("\"x_marker\":\"keep\""),
+            "raw chunk was re-encoded: {text}"
+        );
         assert!(text.contains("data: [DONE]"));
     }
 
@@ -1325,9 +1322,9 @@ mod tests {
 
     #[tokio::test]
     async fn tool_call_history_disables_passthrough_and_keeps_injection() {
+        use axum::Json;
         use axum::http::StatusCode as AxumStatus;
         use axum::routing::post;
-        use axum::Json;
 
         // Echo the request's model + an unknown marker back. If passthrough
         // were active, the marker would survive byte-for-byte; the transform
@@ -1352,10 +1349,8 @@ mod tests {
             )
         }
 
-        let proxy_addr = spawn_passthrough_proxy(
-            Router::new().route("/v1/chat/completions", post(chat)),
-        )
-        .await;
+        let proxy_addr =
+            spawn_passthrough_proxy(Router::new().route("/v1/chat/completions", post(chat))).await;
 
         // Assistant tool-call history without reasoning_content: the transform
         // path must run to inject it, so passthrough is disabled and the
@@ -1428,7 +1423,10 @@ mod tests {
         // asserted. A body missing the translation triggers a 400 instead.
         async fn interactions(body: axum::body::Bytes) -> impl axum::response::IntoResponse {
             let Ok(v) = serde_json::from_slice::<serde_json::Value>(&body) else {
-                return (AxumStatus::BAD_REQUEST, Json(serde_json::json!({"error": "not json"})));
+                return (
+                    AxumStatus::BAD_REQUEST,
+                    Json(serde_json::json!({"error": "not json"})),
+                );
             };
             let translated_ok = v.get("model").is_some()
                 && v.get("store") == Some(&serde_json::Value::Bool(false))
@@ -1456,10 +1454,9 @@ mod tests {
             )
         }
 
-        let proxy_addr = spawn_gemini_proxy(
-            Router::new().route("/v1beta/interactions", post(interactions)),
-        )
-        .await;
+        let proxy_addr =
+            spawn_gemini_proxy(Router::new().route("/v1beta/interactions", post(interactions)))
+                .await;
 
         let body = r#"{"model":"gemini-3.8-flash","max_tokens":1,"messages":[{"role":"user","content":"ping"}]}"#;
         let resp = reqwest::Client::new()
@@ -1480,4 +1477,3 @@ mod tests {
         assert_eq!(json["usage"]["output_tokens"], 22);
     }
 }
-

@@ -109,7 +109,6 @@ fn patch_stream_usage(body: &Bytes) -> Bytes {
     body.clone()
 }
 
-
 pub(crate) async fn execute_provider_request(
     client: &reqwest::Client,
     provider: &Provider,
@@ -280,11 +279,12 @@ fn patched_canonical(req_json: Option<&serde_json::Value>, provider: &Provider) 
     } else {
         after_model_map
     };
-    transform::clamp_max_tokens(after_thinking.as_ref().unwrap_or(req), provider.max_tokens_cap)
-        .or(after_thinking)
+    transform::clamp_max_tokens(
+        after_thinking.as_ref().unwrap_or(req),
+        provider.max_tokens_cap,
+    )
+    .or(after_thinking)
 }
-
-
 
 pub(crate) async fn probe_provider_message(
     client: &reqwest::Client,
@@ -394,7 +394,9 @@ mod tests {
 
     #[test]
     fn patch_stream_usage_injects_include_usage_for_chat_stream() {
-        let body = Bytes::from(r#"{"model":"m","stream":true,"messages":[{"role":"user","content":"hi"}]}"#);
+        let body = Bytes::from(
+            r#"{"model":"m","stream":true,"messages":[{"role":"user","content":"hi"}]}"#,
+        );
         let patched = patch_stream_usage(&body);
         let v: serde_json::Value = serde_json::from_slice(&patched).unwrap();
         assert_eq!(v["stream_options"]["include_usage"], true);

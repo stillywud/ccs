@@ -1302,6 +1302,7 @@ mod tests {
             port: None,
             test_model: None,
             max_tokens_cap: None,
+            extra_headers: HashMap::new(),
         }
     }
 

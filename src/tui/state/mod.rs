@@ -26,8 +26,8 @@ mod filter;
 mod metrics_sync;
 mod navigation;
 
-pub use bg_proxy::{is_process_alive, send_sighup};
 pub(crate) use bg_proxy::{bg_proxy_health_url, fetch_bg_proxy_version};
+pub use bg_proxy::{is_process_alive, send_sighup};
 pub use filter::{filter_suggestions, provider_model_suggestions};
 
 /// Snapshot of DB-backed metrics loaded off the hot path for non-blocking TUI redraws.
@@ -118,9 +118,7 @@ pub(super) enum TestEvent {
     /// A manual model-list refresh came back empty (fetch or parse failed),
     /// so the caller can surface an error instead of silently keeping the
     /// stale catalog.
-    ModelsRefreshFailed {
-        provider: String,
-    },
+    ModelsRefreshFailed { provider: String },
     /// API format auto-detection finished for a new provider being added.
     /// Carries every already-validated field needed to finish constructing
     /// and inserting the `Provider`, since it doesn't exist in config yet.
@@ -737,6 +735,7 @@ mod tests {
                 port: None,
                 test_model: None,
                 max_tokens_cap: None,
+                extra_headers: Default::default(),
             },
         );
 
@@ -892,6 +891,7 @@ mod tests {
                 port: None,
                 test_model: None,
                 max_tokens_cap: None,
+                extra_headers: Default::default(),
             },
         );
         crate::config::save_config(&cfg).unwrap();
@@ -952,6 +952,7 @@ mod tests {
                 port: None,
                 test_model: None,
                 max_tokens_cap: None,
+                extra_headers: Default::default(),
             },
         );
         crate::config::save_config(&cfg).unwrap();
@@ -1023,6 +1024,7 @@ mod tests {
                 port: None,
                 test_model: None,
                 max_tokens_cap: None,
+                extra_headers: Default::default(),
             },
         );
         crate::config::save_config(&cfg).unwrap();

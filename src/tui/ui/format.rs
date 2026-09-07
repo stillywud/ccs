@@ -124,7 +124,9 @@ pub(crate) fn truncate_error(e: &str) -> String {
 
     // Structured "HTTP <status>: <detail>" from test_latency: keep the status
     // and truncate the detail, so a 429 rate-limit text stays actionable.
-    if let Some((status, detail)) = e.split_once(": ") && status.starts_with("HTTP ") {
+    if let Some((status, detail)) = e.split_once(": ")
+        && status.starts_with("HTTP ")
+    {
         let detail = detail.trim();
         let room = MAX.saturating_sub(status.chars().count() + 2);
         return if room == 0 || detail.is_empty() {
@@ -271,10 +273,7 @@ mod tests {
     #[test]
     fn truncate_error_keeps_detail_starting_with_url() {
         let out = truncate_error("HTTP 429: https://openrouter.ai/docs/rate-limits exceeded");
-        assert!(
-            out.starts_with("HTTP 429: https://openrouter."),
-            "{out}"
-        );
+        assert!(out.starts_with("HTTP 429: https://openrouter."), "{out}");
         assert!(out.chars().count() <= 30, "{out}");
     }
 

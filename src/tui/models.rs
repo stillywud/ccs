@@ -447,7 +447,9 @@ mod tests {
 
     fn app_with_no_models(search: &str) -> App {
         let mut app = app_with_current("first");
-        app.models.provider_models.insert("first".to_string(), vec![]);
+        app.models
+            .provider_models
+            .insert("first".to_string(), vec![]);
         app.models.search_field.value = search.to_string();
         app.models.search_active = false;
         app
@@ -472,7 +474,10 @@ mod tests {
         // Registered in the DB too — the periodic metrics sync replaces
         // provider_models from the DB, so a memory-only row would vanish.
         assert_eq!(
-            app.db.load_provider_models().get("first").map(Vec::as_slice),
+            app.db
+                .load_provider_models()
+                .get("first")
+                .map(Vec::as_slice),
             Some(&["deepseek-v4-flash".to_string()][..])
         );
     }
@@ -526,23 +531,30 @@ mod tests {
         // The refreshed catalog omits the tested model; the row must survive so
         // the result stays visible (regression: it used to vanish on completion).
         assert!(build_models(&app).iter().any(|m| m == "first-model"));
-        assert!(app
-            .tests
-            .results
-            .get("first")
-            .is_some_and(|m| m.contains_key("first-model")));
-        assert!(app
-            .tests
-            .results
-            .get("first")
-            .is_some_and(|m| m.contains_key("first-model")));
+        assert!(
+            app.tests
+                .results
+                .get("first")
+                .is_some_and(|m| m.contains_key("first-model"))
+        );
+        assert!(
+            app.tests
+                .results
+                .get("first")
+                .is_some_and(|m| m.contains_key("first-model"))
+        );
     }
 
     #[test]
     fn r_without_credentials_reports_error_without_starting_refresh() {
         let mut app = app_with_current("first");
         app.models.search_active = false;
-        app.config.providers.get_mut("first").unwrap().api_key.clear();
+        app.config
+            .providers
+            .get_mut("first")
+            .unwrap()
+            .api_key
+            .clear();
 
         handle_key(&mut app, KeyCode::Char('r'), KeyModifiers::NONE).unwrap();
 

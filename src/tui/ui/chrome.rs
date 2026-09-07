@@ -61,7 +61,11 @@ fn mem_label(mem_mb: u32) -> String {
     }
 }
 
-fn app_info_spans(listen: &str, has_proxy: bool, stale_version: Option<&str>) -> Vec<Span<'static>> {
+fn app_info_spans(
+    listen: &str,
+    has_proxy: bool,
+    stale_version: Option<&str>,
+) -> Vec<Span<'static>> {
     let mut spans = vec![Span::styled(
         listen.to_owned(),
         if has_proxy {
@@ -72,9 +76,7 @@ fn app_info_spans(listen: &str, has_proxy: bool, stale_version: Option<&str>) ->
     )];
     // The stale badge describes the *running* background proxy; never show it
     // once the process is gone (or was never there).
-    if has_proxy
-        && let Some(v) = stale_version
-    {
+    if has_proxy && let Some(v) = stale_version {
         spans.push(Span::styled(
             format!(" v{v}"),
             Style::default().fg(t::WARNING),
@@ -120,7 +122,11 @@ fn make_app_title_with_sysinfo(
         width,
         sys_info_spans(cpu_pct, mem_mb),
         mem_mb,
-        app_info_spans(&app.config.listen, app.bg_proxy_pid.is_some(), app.bg_proxy_stale_version.as_deref()),
+        app_info_spans(
+            &app.config.listen,
+            app.bg_proxy_pid.is_some(),
+            app.bg_proxy_stale_version.as_deref(),
+        ),
     );
     let right = Line::from(right_spans).right_aligned();
     (Line::from(left_spans), right)
@@ -227,6 +233,9 @@ mod tests {
 
         let right = topbar_right_spans(&left, width, sys_info, 154, app_info);
 
-        assert_eq!(text(&right), "╌╌ cpu 6.5% mem 154MB │ 0.0.0.0:7896 v0.60.1 ╌╌ ");
+        assert_eq!(
+            text(&right),
+            "╌╌ cpu 6.5% mem 154MB │ 0.0.0.0:7896 v0.60.1 ╌╌ "
+        );
     }
 }

@@ -199,6 +199,9 @@ impl App {
             port,
             test_model: existing.and_then(|p| p.test_model.clone()),
             max_tokens_cap: existing.and_then(|p| p.max_tokens_cap),
+            extra_headers: existing
+                .map(|p| p.extra_headers.clone())
+                .unwrap_or_default(),
         };
         // An explicit a/o/g keypress after detection failed wins over whatever
         // text the user typed into the Format field.
@@ -805,6 +808,7 @@ impl App {
                                 port,
                                 test_model: None,
                                 max_tokens_cap: None,
+                                extra_headers: Default::default(),
                             };
                             let is_first = self.config.providers.is_empty();
                             self.config.providers.insert(name.clone(), provider);

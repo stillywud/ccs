@@ -1,9 +1,9 @@
-use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value, json};
-use uuid::Uuid;
 use super::tool_result_text;
 use crate::config::OpenAiApiVersion;
 use crate::error::{AppError, Result};
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value, json};
+use uuid::Uuid;
 
 pub enum WirePayload<'a> {
     Anthropic(&'a Value),
@@ -56,7 +56,11 @@ pub struct Usage {
 
 impl Usage {
     pub fn total_tokens(&self) -> u64 {
-        self.input_tokens + self.output_tokens + self.cache_read_tokens + self.cache_write_tokens + self.thought_tokens
+        self.input_tokens
+            + self.output_tokens
+            + self.cache_read_tokens
+            + self.cache_write_tokens
+            + self.thought_tokens
     }
 
     pub fn to_anthropic(&self) -> Value {
@@ -350,8 +354,12 @@ impl Response {
                 for block in &self.content {
                     match block {
                         ContentBlock::Text { text, .. } => text_parts.push(text.clone()),
-                        ContentBlock::Thinking { thinking, .. } => reasoning_parts.push(thinking.clone()),
-                        ContentBlock::ToolUse { id, name, input, .. } => {
+                        ContentBlock::Thinking { thinking, .. } => {
+                            reasoning_parts.push(thinking.clone())
+                        }
+                        ContentBlock::ToolUse {
+                            id, name, input, ..
+                        } => {
                             tool_calls.push(json!({
                                 "id": id,
                                 "type": "function",
@@ -388,11 +396,14 @@ impl Response {
                 map.insert("id".to_string(), json!(id));
                 map.insert("object".to_string(), json!("chat.completion"));
                 map.insert("model".to_string(), json!(self.model));
-                map.insert("choices".to_string(), json!([{
-                    "index": 0,
-                    "message": msg,
-                    "finish_reason": finish_reason,
-                }]));
+                map.insert(
+                    "choices".to_string(),
+                    json!([{
+                        "index": 0,
+                        "message": msg,
+                        "finish_reason": finish_reason,
+                    }]),
+                );
                 map.insert("usage".to_string(), usage);
                 for (k, v) in &self.extra {
                     map.entry(k.clone()).or_insert_with(|| v.clone());
@@ -422,7 +433,9 @@ impl Response {
                                 "summary": thinking
                             }));
                         }
-                        ContentBlock::ToolUse { id, name, input, .. } => {
+                        ContentBlock::ToolUse {
+                            id, name, input, ..
+                        } => {
                             output_items.push(json!({
                                 "type": "function_call",
                                 "call_id": id,
@@ -468,7 +481,11 @@ impl Response {
                         "content": [{"type": "text", "text": text}]
                     }));
                 }
-                ContentBlock::Thinking { thinking, signature, .. } => {
+                ContentBlock::Thinking {
+                    thinking,
+                    signature,
+                    ..
+                } => {
                     let mut obj = json!({
                         "type": "thought",
                         "content": [{"type": "text", "text": thinking}]
@@ -478,7 +495,9 @@ impl Response {
                     }
                     steps.push(obj);
                 }
-                ContentBlock::ToolUse { id, name, input, .. } => {
+                ContentBlock::ToolUse {
+                    id, name, input, ..
+                } => {
                     steps.push(json!({
                         "type": "function_call",
                         "id": id,
@@ -493,7 +512,14 @@ impl Response {
         let mut map = Map::new();
         map.insert("id".to_string(), json!(self.id));
         map.insert("model".to_string(), json!(self.model));
-        map.insert("status".to_string(), json!(if self.stop_reason.as_deref() == Some("tool_use") { "requires_action" } else { "completed" }));
+        map.insert(
+            "status".to_string(),
+            json!(if self.stop_reason.as_deref() == Some("tool_use") {
+                "requires_action"
+            } else {
+                "completed"
+            }),
+        );
         map.insert("steps".to_string(), json!(steps));
         map.insert("usage".to_string(), usage);
         for (k, v) in &self.extra {
@@ -510,18 +536,44 @@ impl<'a> TryFrom<WirePayload<'a>> for Response {
         match payload {
             WirePayload::Anthropic(val) => {
                 let usage = Usage::try_from(WirePayload::Anthropic(val))?;
-                let id = val.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let model = val.get("model").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let stop_reason = val.get("stop_reason").and_then(|v| v.as_str()).map(String::from);
+                let id = val
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let model = val
+                    .get("model")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let stop_reason = val
+                    .get("stop_reason")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
 
                 let mut content = Vec::new();
                 if let Some(blocks) = val.get("content").and_then(|v| v.as_array()) {
                     for b in blocks {
-                        content.push(serde_json::from_value(b.clone()).map_err(|e| AppError::Transform(e.to_string()))?);
+                        content.push(
+                            serde_json::from_value(b.clone())
+                                .map_err(|e| AppError::Transform(e.to_string()))?,
+                        );
                     }
                 }
 
-                let extra = extract_extra(val, &["id", "type", "role", "model", "content", "stop_reason", "stop_sequence", "usage"]);
+                let extra = extract_extra(
+                    val,
+                    &[
+                        "id",
+                        "type",
+                        "role",
+                        "model",
+                        "content",
+                        "stop_reason",
+                        "stop_sequence",
+                        "usage",
+                    ],
+                );
 
                 Ok(Self {
                     id,
@@ -533,12 +585,27 @@ impl<'a> TryFrom<WirePayload<'a>> for Response {
                 })
             }
             WirePayload::OpenAi(val, OpenAiApiVersion::ChatCompletions) => {
-                let usage = Usage::try_from(WirePayload::OpenAi(val, OpenAiApiVersion::ChatCompletions))?;
-                let id = val.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let model = val.get("model").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let usage =
+                    Usage::try_from(WirePayload::OpenAi(val, OpenAiApiVersion::ChatCompletions))?;
+                let id = val
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let model = val
+                    .get("model")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
 
-                let choice = val.get("choices").and_then(|c| c.get(0)).unwrap_or(&Value::Null);
-                let finish_reason = choice.get("finish_reason").and_then(|f| f.as_str()).unwrap_or("stop");
+                let choice = val
+                    .get("choices")
+                    .and_then(|c| c.get(0))
+                    .unwrap_or(&Value::Null);
+                let finish_reason = choice
+                    .get("finish_reason")
+                    .and_then(|f| f.as_str())
+                    .unwrap_or("stop");
                 let stop_reason = match finish_reason {
                     "stop" => Some("end_turn".to_string()),
                     "length" => Some("max_tokens".to_string()),
@@ -549,7 +616,9 @@ impl<'a> TryFrom<WirePayload<'a>> for Response {
                 let mut content = Vec::new();
                 let msg = choice.get("message").unwrap_or(&Value::Null);
 
-                if let Some(rc) = msg.get("reasoning_content").and_then(|r| r.as_str()) && !rc.is_empty() {
+                if let Some(rc) = msg.get("reasoning_content").and_then(|r| r.as_str())
+                    && !rc.is_empty()
+                {
                     content.push(ContentBlock::Thinking {
                         thinking: rc.to_string(),
                         signature: None,
@@ -557,7 +626,9 @@ impl<'a> TryFrom<WirePayload<'a>> for Response {
                     });
                 }
 
-                if let Some(text) = msg.get("content").and_then(|c| c.as_str()) && !text.is_empty() {
+                if let Some(text) = msg.get("content").and_then(|c| c.as_str())
+                    && !text.is_empty()
+                {
                     content.push(ContentBlock::Text {
                         text: text.to_string(),
                         extra: Map::new(),
@@ -566,11 +637,23 @@ impl<'a> TryFrom<WirePayload<'a>> for Response {
 
                 if let Some(tcs) = msg.get("tool_calls").and_then(|t| t.as_array()) {
                     for tc in tcs {
-                        let call_id = tc.get("id").and_then(|i| i.as_str()).unwrap_or("").to_string();
+                        let call_id = tc
+                            .get("id")
+                            .and_then(|i| i.as_str())
+                            .unwrap_or("")
+                            .to_string();
                         let fn_obj = tc.get("function").unwrap_or(&Value::Null);
-                        let name = fn_obj.get("name").and_then(|n| n.as_str()).unwrap_or_default().to_string();
-                        let args_str = fn_obj.get("arguments").and_then(|a| a.as_str()).unwrap_or("{}");
-                        let input = serde_json::from_str(args_str).unwrap_or(Value::Object(Map::new()));
+                        let name = fn_obj
+                            .get("name")
+                            .and_then(|n| n.as_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        let args_str = fn_obj
+                            .get("arguments")
+                            .and_then(|a| a.as_str())
+                            .unwrap_or("{}");
+                        let input =
+                            serde_json::from_str(args_str).unwrap_or(Value::Object(Map::new()));
                         content.push(ContentBlock::ToolUse {
                             id: call_id,
                             name,
@@ -580,7 +663,10 @@ impl<'a> TryFrom<WirePayload<'a>> for Response {
                     }
                 }
 
-                let extra = extract_extra(val, &["id", "object", "model", "choices", "usage", "created"]);
+                let extra = extract_extra(
+                    val,
+                    &["id", "object", "model", "choices", "usage", "created"],
+                );
 
                 Ok(Self {
                     id,
@@ -593,9 +679,20 @@ impl<'a> TryFrom<WirePayload<'a>> for Response {
             }
             WirePayload::OpenAi(val, OpenAiApiVersion::Responses) => {
                 let usage = Usage::try_from(WirePayload::OpenAi(val, OpenAiApiVersion::Responses))?;
-                let id = val.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let model = val.get("model").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let status = val.get("status").and_then(|s| s.as_str()).unwrap_or("completed");
+                let id = val
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let model = val
+                    .get("model")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let status = val
+                    .get("status")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("completed");
                 let stop_reason = match status {
                     "incomplete" => Some("max_tokens".to_string()),
                     _ => Some("end_turn".to_string()),
@@ -607,19 +704,35 @@ impl<'a> TryFrom<WirePayload<'a>> for Response {
                         let item_type = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
                         match item_type {
                             "message" => {
-                                if let Some(blocks) = item.get("content").and_then(|c| c.as_array()) {
+                                if let Some(blocks) = item.get("content").and_then(|c| c.as_array())
+                                {
                                     for b in blocks {
                                         if let Some(t) = b.get("text").and_then(|t| t.as_str()) {
-                                            content.push(ContentBlock::Text { text: t.to_string(), extra: Map::new() });
+                                            content.push(ContentBlock::Text {
+                                                text: t.to_string(),
+                                                extra: Map::new(),
+                                            });
                                         }
                                     }
                                 }
                             }
                             "function_call" => {
-                                let call_id = item.get("call_id").and_then(|i| i.as_str()).unwrap_or("").to_string();
-                                let name = item.get("name").and_then(|n| n.as_str()).unwrap_or_default().to_string();
-                                let args_str = item.get("arguments").and_then(|a| a.as_str()).unwrap_or("{}");
-                                let input = serde_json::from_str(args_str).unwrap_or(Value::Object(Map::new()));
+                                let call_id = item
+                                    .get("call_id")
+                                    .and_then(|i| i.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let name = item
+                                    .get("name")
+                                    .and_then(|n| n.as_str())
+                                    .unwrap_or_default()
+                                    .to_string();
+                                let args_str = item
+                                    .get("arguments")
+                                    .and_then(|a| a.as_str())
+                                    .unwrap_or("{}");
+                                let input = serde_json::from_str(args_str)
+                                    .unwrap_or(Value::Object(Map::new()));
                                 content.push(ContentBlock::ToolUse {
                                     id: call_id,
                                     name,
@@ -642,7 +755,18 @@ impl<'a> TryFrom<WirePayload<'a>> for Response {
                     }
                 }
 
-                let extra = extract_extra(val, &["id", "object", "model", "status", "output", "usage", "created_at"]);
+                let extra = extract_extra(
+                    val,
+                    &[
+                        "id",
+                        "object",
+                        "model",
+                        "status",
+                        "output",
+                        "usage",
+                        "created_at",
+                    ],
+                );
 
                 Ok(Self {
                     id,
@@ -655,8 +779,16 @@ impl<'a> TryFrom<WirePayload<'a>> for Response {
             }
             WirePayload::Gemini(val) => {
                 let usage = Usage::try_from(WirePayload::Gemini(val))?;
-                let id = val.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let model = val.get("model").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let id = val
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let model = val
+                    .get("model")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
 
                 let mut content = Vec::new();
                 let mut last_was_tool = false;
@@ -667,20 +799,32 @@ impl<'a> TryFrom<WirePayload<'a>> for Response {
                         match step_type {
                             "model_output" => {
                                 last_was_tool = false;
-                                if let Some(blocks) = step.get("content").and_then(|c| c.as_array()) {
+                                if let Some(blocks) = step.get("content").and_then(|c| c.as_array())
+                                {
                                     for b in blocks {
                                         if b.get("type").and_then(|t| t.as_str()) == Some("text") {
-                                            let text = b.get("text").and_then(|t| t.as_str()).unwrap_or("").to_string();
-                                            content.push(ContentBlock::Text { text, extra: Map::new() });
+                                            let text = b
+                                                .get("text")
+                                                .and_then(|t| t.as_str())
+                                                .unwrap_or("")
+                                                .to_string();
+                                            content.push(ContentBlock::Text {
+                                                text,
+                                                extra: Map::new(),
+                                            });
                                         }
                                     }
                                 }
                             }
                             "thought" => {
                                 last_was_tool = false;
-                                let signature = step.get("signature").and_then(|s| s.as_str()).map(String::from);
+                                let signature = step
+                                    .get("signature")
+                                    .and_then(|s| s.as_str())
+                                    .map(String::from);
                                 let mut thinking = String::new();
-                                if let Some(blocks) = step.get("content").and_then(|c| c.as_array()) {
+                                if let Some(blocks) = step.get("content").and_then(|c| c.as_array())
+                                {
                                     for b in blocks {
                                         if let Some(t) = b.get("text").and_then(|t| t.as_str()) {
                                             thinking.push_str(t);
@@ -695,9 +839,20 @@ impl<'a> TryFrom<WirePayload<'a>> for Response {
                             }
                             "function_call" => {
                                 last_was_tool = true;
-                                let call_id = step.get("id").and_then(|i| i.as_str()).unwrap_or("").to_string();
-                                let name = step.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
-                                let input = step.get("arguments").cloned().unwrap_or(Value::Object(Map::new()));
+                                let call_id = step
+                                    .get("id")
+                                    .and_then(|i| i.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let name = step
+                                    .get("name")
+                                    .and_then(|n| n.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let input = step
+                                    .get("arguments")
+                                    .cloned()
+                                    .unwrap_or(Value::Object(Map::new()));
                                 content.push(ContentBlock::ToolUse {
                                     id: call_id,
                                     name,
@@ -747,10 +902,12 @@ impl Request {
         if self.stream {
             map.insert("stream".to_string(), json!(true));
         }
-        let messages_val = serde_json::to_value(&self.messages).map_err(|e| AppError::Transform(e.to_string()))?;
+        let messages_val =
+            serde_json::to_value(&self.messages).map_err(|e| AppError::Transform(e.to_string()))?;
         map.insert("messages".to_string(), messages_val);
         if !self.tools.is_empty() {
-            let tools_val = serde_json::to_value(&self.tools).map_err(|e| AppError::Transform(e.to_string()))?;
+            let tools_val = serde_json::to_value(&self.tools)
+                .map_err(|e| AppError::Transform(e.to_string()))?;
             map.insert("tools".to_string(), tools_val);
         }
         for (k, v) in &self.extra {
@@ -785,7 +942,9 @@ impl Request {
                     for b in &m.content {
                         match b {
                             ContentBlock::Text { text, .. } => text_acc.push_str(text),
-                            ContentBlock::ToolUse { id, name, input, .. } => {
+                            ContentBlock::ToolUse {
+                                id, name, input, ..
+                            } => {
                                 tool_calls.push(json!({
                                     "id": id,
                                     "type": "function",
@@ -795,7 +954,11 @@ impl Request {
                                     }
                                 }));
                             }
-                            ContentBlock::ToolResult { tool_use_id, content, .. } => {
+                            ContentBlock::ToolResult {
+                                tool_use_id,
+                                content,
+                                ..
+                            } => {
                                 had_tool_result = true;
                                 msgs.push(json!({
                                     "role": "tool",
@@ -876,7 +1039,9 @@ impl Request {
                                     "content": [{"type": "input_text", "text": text}]
                                 }));
                             }
-                            ContentBlock::ToolUse { id, name, input, .. } => {
+                            ContentBlock::ToolUse {
+                                id, name, input, ..
+                            } => {
                                 input_items.push(json!({
                                     "type": "function_call",
                                     "call_id": id,
@@ -884,7 +1049,11 @@ impl Request {
                                     "arguments": serde_json::to_string(input).unwrap_or_default(),
                                 }));
                             }
-                            ContentBlock::ToolResult { tool_use_id, content, .. } => {
+                            ContentBlock::ToolResult {
+                                tool_use_id,
+                                content,
+                                ..
+                            } => {
                                 input_items.push(json!({
                                     "type": "function_call_output",
                                     "call_id": tool_use_id,
@@ -955,10 +1124,12 @@ impl Request {
                                     "content": [{"type": "text", "text": text}]
                                 }));
                             }
-                            ContentBlock::Thinking { thinking, signature, .. } => {
-                                let sig = signature
-                                    .as_deref()
-                                    .filter(|s| !s.is_empty());
+                            ContentBlock::Thinking {
+                                thinking,
+                                signature,
+                                ..
+                            } => {
+                                let sig = signature.as_deref().filter(|s| !s.is_empty());
                                 if sig.is_some() {
                                     had_signed_thought = true;
                                     let mut obj = json!({
@@ -972,10 +1143,14 @@ impl Request {
                                     // cryptographically; a signature-less block
                                     // is dropped rather than sent as an invalid
                                     // step (mirrors gemini.rs).
-                                    tracing::warn!("dropped signature-less thinking block from Gemini history");
+                                    tracing::warn!(
+                                        "dropped signature-less thinking block from Gemini history"
+                                    );
                                 }
                             }
-                            ContentBlock::ToolUse { id, name, input, .. } => {
+                            ContentBlock::ToolUse {
+                                id, name, input, ..
+                            } => {
                                 if !had_signed_thought {
                                     tracing::warn!(
                                         "tool round replayed without a signed thought; \
@@ -1001,7 +1176,11 @@ impl Request {
                             ContentBlock::Text { text, .. } => {
                                 text_parts.push(json!({"type": "text", "text": text}));
                             }
-                            ContentBlock::ToolResult { tool_use_id, content, .. } => {
+                            ContentBlock::ToolResult {
+                                tool_use_id,
+                                content,
+                                ..
+                            } => {
                                 if !text_parts.is_empty() {
                                     steps.push(json!({
                                         "type": "user_input",
@@ -1045,7 +1224,10 @@ impl Request {
                     "parameters": t.input_schema,
                 }));
             }
-            map.insert("tools".to_string(), json!([{"function_declarations": decls}]));
+            map.insert(
+                "tools".to_string(),
+                json!([{"function_declarations": decls}]),
+            );
         }
 
         for (k, v) in &self.extra {
@@ -1061,7 +1243,11 @@ impl<'a> TryFrom<WirePayload<'a>> for Request {
     fn try_from(payload: WirePayload<'a>) -> Result<Self> {
         match payload {
             WirePayload::Anthropic(val) => {
-                let model = val.get("model").and_then(|m| m.as_str()).unwrap_or("").to_string();
+                let model = val
+                    .get("model")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 let max_tokens = val.get("max_tokens").and_then(|m| m.as_u64());
                 let temperature = val.get("temperature").and_then(|t| t.as_f64());
                 let stream = val.get("stream").and_then(|s| s.as_bool()).unwrap_or(false);
@@ -1080,32 +1266,60 @@ impl<'a> TryFrom<WirePayload<'a>> for Request {
                 let mut messages = Vec::new();
                 if let Some(msgs) = val.get("messages").and_then(|m| m.as_array()) {
                     for m in msgs {
-                        let role = m.get("role").and_then(|r| r.as_str()).unwrap_or("user").to_string();
+                        let role = m
+                            .get("role")
+                            .and_then(|r| r.as_str())
+                            .unwrap_or("user")
+                            .to_string();
                         let mut content = Vec::new();
                         match m.get("content") {
                             Some(Value::String(text)) => {
-                                content.push(ContentBlock::Text { text: text.clone(), extra: Map::new() });
+                                content.push(ContentBlock::Text {
+                                    text: text.clone(),
+                                    extra: Map::new(),
+                                });
                             }
                             Some(Value::Array(blocks)) => {
                                 for b in blocks {
-                                    content.push(serde_json::from_value(b.clone()).map_err(|e| AppError::Transform(e.to_string()))?);
+                                    content.push(
+                                        serde_json::from_value(b.clone())
+                                            .map_err(|e| AppError::Transform(e.to_string()))?,
+                                    );
                                 }
                             }
                             _ => {}
                         }
                         let extra = extract_extra(m, &["role", "content"]);
-                        messages.push(Message { role, content, extra });
+                        messages.push(Message {
+                            role,
+                            content,
+                            extra,
+                        });
                     }
                 }
 
                 let mut tools = Vec::new();
                 if let Some(ts) = val.get("tools").and_then(|t| t.as_array()) {
                     for t in ts {
-                        tools.push(serde_json::from_value(t.clone()).map_err(|e| AppError::Transform(e.to_string()))?);
+                        tools.push(
+                            serde_json::from_value(t.clone())
+                                .map_err(|e| AppError::Transform(e.to_string()))?,
+                        );
                     }
                 }
 
-                let extra = extract_extra(val, &["model", "messages", "system", "max_tokens", "temperature", "stream", "tools"]);
+                let extra = extract_extra(
+                    val,
+                    &[
+                        "model",
+                        "messages",
+                        "system",
+                        "max_tokens",
+                        "temperature",
+                        "stream",
+                        "tools",
+                    ],
+                );
 
                 Ok(Self {
                     model,
@@ -1119,8 +1333,13 @@ impl<'a> TryFrom<WirePayload<'a>> for Request {
                 })
             }
             WirePayload::OpenAi(val, OpenAiApiVersion::ChatCompletions) => {
-                let model = val.get("model").and_then(|m| m.as_str()).unwrap_or("").to_string();
-                let max_tokens = val.get("max_tokens")
+                let model = val
+                    .get("model")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let max_tokens = val
+                    .get("max_tokens")
                     .or_else(|| val.get("max_completion_tokens"))
                     .or_else(|| val.get("max_output_tokens"))
                     .and_then(|m| m.as_u64());
@@ -1141,7 +1360,9 @@ impl<'a> TryFrom<WirePayload<'a>> for Request {
                         }
 
                         let mut content = Vec::new();
-                        if let Some(rc) = m.get("reasoning_content").and_then(|r| r.as_str()) && !rc.is_empty() {
+                        if let Some(rc) = m.get("reasoning_content").and_then(|r| r.as_str())
+                            && !rc.is_empty()
+                        {
                             content.push(ContentBlock::Thinking {
                                 thinking: rc.to_string(),
                                 signature: None,
@@ -1149,19 +1370,41 @@ impl<'a> TryFrom<WirePayload<'a>> for Request {
                             });
                         }
 
-
                         if let Some(tcs) = m.get("tool_calls").and_then(|t| t.as_array()) {
                             for tc in tcs {
-                                let id = tc.get("id").and_then(|i| i.as_str()).unwrap_or("").to_string();
-                                let name = tc.get("function").and_then(|f| f.get("name")).and_then(|n| n.as_str()).unwrap_or("").to_string();
-                                let args_str = tc.get("function").and_then(|f| f.get("arguments")).and_then(|a| a.as_str()).unwrap_or("{}");
-                                let input = serde_json::from_str(args_str).unwrap_or(Value::Object(Map::new()));
-                                content.push(ContentBlock::ToolUse { id, name, input, extra: Map::new() });
+                                let id = tc
+                                    .get("id")
+                                    .and_then(|i| i.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let name = tc
+                                    .get("function")
+                                    .and_then(|f| f.get("name"))
+                                    .and_then(|n| n.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let args_str = tc
+                                    .get("function")
+                                    .and_then(|f| f.get("arguments"))
+                                    .and_then(|a| a.as_str())
+                                    .unwrap_or("{}");
+                                let input = serde_json::from_str(args_str)
+                                    .unwrap_or(Value::Object(Map::new()));
+                                content.push(ContentBlock::ToolUse {
+                                    id,
+                                    name,
+                                    input,
+                                    extra: Map::new(),
+                                });
                             }
                         }
 
                         if role == "tool" {
-                            let tool_use_id = m.get("tool_call_id").and_then(|i| i.as_str()).unwrap_or("").to_string();
+                            let tool_use_id = m
+                                .get("tool_call_id")
+                                .and_then(|i| i.as_str())
+                                .unwrap_or("")
+                                .to_string();
                             let content_val = m.get("content").cloned().unwrap_or(Value::Null);
                             content.push(ContentBlock::ToolResult {
                                 tool_use_id,
@@ -1169,35 +1412,102 @@ impl<'a> TryFrom<WirePayload<'a>> for Request {
                                 is_error: None,
                                 extra: Map::new(),
                             });
-                        } else if let Some(text) = m.get("content").and_then(|c| c.as_str()) && !text.is_empty() {
-                            content.push(ContentBlock::Text { text: text.to_string(), extra: Map::new() });
+                        } else if let Some(text) = m.get("content").and_then(|c| c.as_str())
+                            && !text.is_empty()
+                        {
+                            content.push(ContentBlock::Text {
+                                text: text.to_string(),
+                                extra: Map::new(),
+                            });
                         }
 
-                        let extra = extract_extra(m, &["role", "content", "reasoning_content", "tool_calls", "tool_call_id"]);
-                        messages.push(Message { role: role.to_string(), content, extra });
+                        let extra = extract_extra(
+                            m,
+                            &[
+                                "role",
+                                "content",
+                                "reasoning_content",
+                                "tool_calls",
+                                "tool_call_id",
+                            ],
+                        );
+                        messages.push(Message {
+                            role: role.to_string(),
+                            content,
+                            extra,
+                        });
                     }
                 }
 
-                let system = if system_parts.is_empty() { None } else { Some(system_parts.join("\n\n")) };
+                let system = if system_parts.is_empty() {
+                    None
+                } else {
+                    Some(system_parts.join("\n\n"))
+                };
 
                 let mut tools = Vec::new();
                 if let Some(ts) = val.get("tools").and_then(|t| t.as_array()) {
                     for t in ts {
                         let fn_obj = t.get("function").unwrap_or(t);
-                        let name = fn_obj.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
-                        let description = fn_obj.get("description").and_then(|d| d.as_str()).map(String::from);
-                        let input_schema = fn_obj.get("parameters").cloned().unwrap_or(Value::Object(Map::new()));
-                        tools.push(Tool { name, description, input_schema, extra: Map::new() });
+                        let name = fn_obj
+                            .get("name")
+                            .and_then(|n| n.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let description = fn_obj
+                            .get("description")
+                            .and_then(|d| d.as_str())
+                            .map(String::from);
+                        let input_schema = fn_obj
+                            .get("parameters")
+                            .cloned()
+                            .unwrap_or(Value::Object(Map::new()));
+                        tools.push(Tool {
+                            name,
+                            description,
+                            input_schema,
+                            extra: Map::new(),
+                        });
                     }
                 }
 
-                let extra = extract_extra(val, &["model", "messages", "max_tokens", "max_completion_tokens", "temperature", "stream", "tools"]);
-                Ok(Self { model, messages, system, max_tokens, temperature, stream, tools, extra })
+                let extra = extract_extra(
+                    val,
+                    &[
+                        "model",
+                        "messages",
+                        "max_tokens",
+                        "max_completion_tokens",
+                        "temperature",
+                        "stream",
+                        "tools",
+                    ],
+                );
+                Ok(Self {
+                    model,
+                    messages,
+                    system,
+                    max_tokens,
+                    temperature,
+                    stream,
+                    tools,
+                    extra,
+                })
             }
             WirePayload::OpenAi(val, OpenAiApiVersion::Responses) => {
-                let model = val.get("model").and_then(|m| m.as_str()).unwrap_or("").to_string();
-                let system = val.get("instructions").and_then(|i| i.as_str()).map(String::from);
-                let max_tokens = val.get("max_output_tokens").or_else(|| val.get("max_tokens")).and_then(|m| m.as_u64());
+                let model = val
+                    .get("model")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let system = val
+                    .get("instructions")
+                    .and_then(|i| i.as_str())
+                    .map(String::from);
+                let max_tokens = val
+                    .get("max_output_tokens")
+                    .or_else(|| val.get("max_tokens"))
+                    .and_then(|m| m.as_u64());
                 let temperature = val.get("temperature").and_then(|t| t.as_f64());
                 let stream = val.get("stream").and_then(|s| s.as_bool()).unwrap_or(false);
 
@@ -1207,30 +1517,63 @@ impl<'a> TryFrom<WirePayload<'a>> for Request {
                         let item_type = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
                         match item_type {
                             "message" => {
-                                let role = item.get("role").and_then(|r| r.as_str()).unwrap_or("user").to_string();
+                                let role = item
+                                    .get("role")
+                                    .and_then(|r| r.as_str())
+                                    .unwrap_or("user")
+                                    .to_string();
                                 let mut content = Vec::new();
-                                if let Some(blocks) = item.get("content").and_then(|c| c.as_array()) {
+                                if let Some(blocks) = item.get("content").and_then(|c| c.as_array())
+                                {
                                     for b in blocks {
                                         if let Some(t) = b.get("text").and_then(|t| t.as_str()) {
-                                            content.push(ContentBlock::Text { text: t.to_string(), extra: Map::new() });
+                                            content.push(ContentBlock::Text {
+                                                text: t.to_string(),
+                                                extra: Map::new(),
+                                            });
                                         }
                                     }
                                 }
-                                messages.push(Message { role, content, extra: Map::new() });
+                                messages.push(Message {
+                                    role,
+                                    content,
+                                    extra: Map::new(),
+                                });
                             }
                             "function_call" => {
-                                let call_id = item.get("call_id").and_then(|i| i.as_str()).unwrap_or("").to_string();
-                                let name = item.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
-                                let args_str = item.get("arguments").and_then(|a| a.as_str()).unwrap_or("{}");
-                                let input = serde_json::from_str(args_str).unwrap_or(Value::Object(Map::new()));
+                                let call_id = item
+                                    .get("call_id")
+                                    .and_then(|i| i.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let name = item
+                                    .get("name")
+                                    .and_then(|n| n.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let args_str = item
+                                    .get("arguments")
+                                    .and_then(|a| a.as_str())
+                                    .unwrap_or("{}");
+                                let input = serde_json::from_str(args_str)
+                                    .unwrap_or(Value::Object(Map::new()));
                                 messages.push(Message {
                                     role: "assistant".to_string(),
-                                    content: vec![ContentBlock::ToolUse { id: call_id, name, input, extra: Map::new() }],
+                                    content: vec![ContentBlock::ToolUse {
+                                        id: call_id,
+                                        name,
+                                        input,
+                                        extra: Map::new(),
+                                    }],
                                     extra: Map::new(),
                                 });
                             }
                             "function_call_output" => {
-                                let call_id = item.get("call_id").and_then(|i| i.as_str()).unwrap_or("").to_string();
+                                let call_id = item
+                                    .get("call_id")
+                                    .and_then(|i| i.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
                                 let output = item.get("output").cloned().unwrap_or(Value::Null);
                                 messages.push(Message {
                                     role: "user".to_string(),
@@ -1265,18 +1608,58 @@ impl<'a> TryFrom<WirePayload<'a>> for Request {
                 let mut tools = Vec::new();
                 if let Some(ts) = val.get("tools").and_then(|t| t.as_array()) {
                     for t in ts {
-                        let name = t.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
-                        let description = t.get("description").and_then(|d| d.as_str()).map(String::from);
-                        let input_schema = t.get("parameters").cloned().unwrap_or(Value::Object(Map::new()));
-                        tools.push(Tool { name, description, input_schema, extra: Map::new() });
+                        let name = t
+                            .get("name")
+                            .and_then(|n| n.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let description = t
+                            .get("description")
+                            .and_then(|d| d.as_str())
+                            .map(String::from);
+                        let input_schema = t
+                            .get("parameters")
+                            .cloned()
+                            .unwrap_or(Value::Object(Map::new()));
+                        tools.push(Tool {
+                            name,
+                            description,
+                            input_schema,
+                            extra: Map::new(),
+                        });
                     }
                 }
 
-                let extra = extract_extra(val, &["model", "instructions", "input", "max_output_tokens", "max_tokens", "temperature", "stream", "tools"]);
-                Ok(Self { model, messages, system, max_tokens, temperature, stream, tools, extra })
+                let extra = extract_extra(
+                    val,
+                    &[
+                        "model",
+                        "instructions",
+                        "input",
+                        "max_output_tokens",
+                        "max_tokens",
+                        "temperature",
+                        "stream",
+                        "tools",
+                    ],
+                );
+                Ok(Self {
+                    model,
+                    messages,
+                    system,
+                    max_tokens,
+                    temperature,
+                    stream,
+                    tools,
+                    extra,
+                })
             }
             WirePayload::Gemini(val) => {
-                let model = val.get("model").and_then(|m| m.as_str()).unwrap_or("").to_string();
+                let model = val
+                    .get("model")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 let stream = val.get("stream").and_then(|s| s.as_bool()).unwrap_or(false);
 
                 let mut messages = Vec::new();
@@ -1286,30 +1669,50 @@ impl<'a> TryFrom<WirePayload<'a>> for Request {
                         match step_type {
                             "user_input" => {
                                 let mut content = Vec::new();
-                                if let Some(blocks) = step.get("content").and_then(|c| c.as_array()) {
+                                if let Some(blocks) = step.get("content").and_then(|c| c.as_array())
+                                {
                                     for b in blocks {
                                         if let Some(t) = b.get("text").and_then(|t| t.as_str()) {
-                                            content.push(ContentBlock::Text { text: t.to_string(), extra: Map::new() });
+                                            content.push(ContentBlock::Text {
+                                                text: t.to_string(),
+                                                extra: Map::new(),
+                                            });
                                         }
                                     }
                                 }
-                                messages.push(Message { role: "user".to_string(), content, extra: Map::new() });
+                                messages.push(Message {
+                                    role: "user".to_string(),
+                                    content,
+                                    extra: Map::new(),
+                                });
                             }
                             "model_output" => {
                                 let mut content = Vec::new();
-                                if let Some(blocks) = step.get("content").and_then(|c| c.as_array()) {
+                                if let Some(blocks) = step.get("content").and_then(|c| c.as_array())
+                                {
                                     for b in blocks {
                                         if let Some(t) = b.get("text").and_then(|t| t.as_str()) {
-                                            content.push(ContentBlock::Text { text: t.to_string(), extra: Map::new() });
+                                            content.push(ContentBlock::Text {
+                                                text: t.to_string(),
+                                                extra: Map::new(),
+                                            });
                                         }
                                     }
                                 }
-                                messages.push(Message { role: "assistant".to_string(), content, extra: Map::new() });
+                                messages.push(Message {
+                                    role: "assistant".to_string(),
+                                    content,
+                                    extra: Map::new(),
+                                });
                             }
                             "thought" => {
-                                let signature = step.get("signature").and_then(|s| s.as_str()).map(String::from);
+                                let signature = step
+                                    .get("signature")
+                                    .and_then(|s| s.as_str())
+                                    .map(String::from);
                                 let mut thinking = String::new();
-                                if let Some(blocks) = step.get("content").and_then(|c| c.as_array()) {
+                                if let Some(blocks) = step.get("content").and_then(|c| c.as_array())
+                                {
                                     for b in blocks {
                                         if let Some(t) = b.get("text").and_then(|t| t.as_str()) {
                                             thinking.push_str(t);
@@ -1318,22 +1721,46 @@ impl<'a> TryFrom<WirePayload<'a>> for Request {
                                 }
                                 messages.push(Message {
                                     role: "assistant".to_string(),
-                                    content: vec![ContentBlock::Thinking { thinking, signature, extra: Map::new() }],
+                                    content: vec![ContentBlock::Thinking {
+                                        thinking,
+                                        signature,
+                                        extra: Map::new(),
+                                    }],
                                     extra: Map::new(),
                                 });
                             }
                             "function_call" => {
-                                let id = step.get("id").and_then(|i| i.as_str()).unwrap_or("").to_string();
-                                let name = step.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
-                                let input = step.get("arguments").cloned().unwrap_or(Value::Object(Map::new()));
+                                let id = step
+                                    .get("id")
+                                    .and_then(|i| i.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let name = step
+                                    .get("name")
+                                    .and_then(|n| n.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let input = step
+                                    .get("arguments")
+                                    .cloned()
+                                    .unwrap_or(Value::Object(Map::new()));
                                 messages.push(Message {
                                     role: "assistant".to_string(),
-                                    content: vec![ContentBlock::ToolUse { id, name, input, extra: Map::new() }],
+                                    content: vec![ContentBlock::ToolUse {
+                                        id,
+                                        name,
+                                        input,
+                                        extra: Map::new(),
+                                    }],
                                     extra: Map::new(),
                                 });
                             }
                             "function_result" => {
-                                let call_id = step.get("call_id").and_then(|i| i.as_str()).unwrap_or("").to_string();
+                                let call_id = step
+                                    .get("call_id")
+                                    .and_then(|i| i.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
                                 let result = step.get("result").cloned().unwrap_or(Value::Null);
                                 messages.push(Message {
                                     role: "user".to_string(),
@@ -1354,19 +1781,45 @@ impl<'a> TryFrom<WirePayload<'a>> for Request {
                 let mut tools = Vec::new();
                 if let Some(ts) = val.get("tools").and_then(|t| t.as_array()) {
                     for t in ts {
-                        if let Some(decls) = t.get("function_declarations").and_then(|d| d.as_array()) {
+                        if let Some(decls) =
+                            t.get("function_declarations").and_then(|d| d.as_array())
+                        {
                             for decl in decls {
-                                let name = decl.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
-                                let description = decl.get("description").and_then(|d| d.as_str()).map(String::from);
-                                let input_schema = decl.get("parameters").cloned().unwrap_or(Value::Object(Map::new()));
-                                tools.push(Tool { name, description, input_schema, extra: Map::new() });
+                                let name = decl
+                                    .get("name")
+                                    .and_then(|n| n.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let description = decl
+                                    .get("description")
+                                    .and_then(|d| d.as_str())
+                                    .map(String::from);
+                                let input_schema = decl
+                                    .get("parameters")
+                                    .cloned()
+                                    .unwrap_or(Value::Object(Map::new()));
+                                tools.push(Tool {
+                                    name,
+                                    description,
+                                    input_schema,
+                                    extra: Map::new(),
+                                });
                             }
                         }
                     }
                 }
 
                 let extra = extract_extra(val, &["model", "input", "stream", "tools"]);
-                Ok(Self { model, messages, system: None, max_tokens: None, temperature: None, stream, tools, extra })
+                Ok(Self {
+                    model,
+                    messages,
+                    system: None,
+                    max_tokens: None,
+                    temperature: None,
+                    stream,
+                    tools,
+                    extra,
+                })
             }
         }
     }
@@ -1390,7 +1843,11 @@ mod tests {
             }
         });
 
-        let canonical = Usage::try_from(WirePayload::OpenAi(&openai_usage, OpenAiApiVersion::ChatCompletions)).unwrap();
+        let canonical = Usage::try_from(WirePayload::OpenAi(
+            &openai_usage,
+            OpenAiApiVersion::ChatCompletions,
+        ))
+        .unwrap();
         assert_eq!(canonical.input_tokens, 70);
         assert_eq!(canonical.cache_read_tokens, 30);
         assert_eq!(canonical.output_tokens, 30);
@@ -1445,7 +1902,10 @@ mod tests {
         });
 
         let canonical = Response::try_from(WirePayload::Anthropic(&anthropic_resp)).unwrap();
-        assert_eq!(canonical.extra.get("custom_metadata_field").unwrap(), "preserved");
+        assert_eq!(
+            canonical.extra.get("custom_metadata_field").unwrap(),
+            "preserved"
+        );
         assert_eq!(canonical.extra.get("billing_tag").unwrap(), 42);
 
         let exported = canonical.to_anthropic().unwrap();
@@ -1467,7 +1927,10 @@ mod tests {
 
         let canonical = Request::try_from(WirePayload::Anthropic(&anthropic_req)).unwrap();
         assert_eq!(canonical.extra.get("user_id").unwrap(), "usr_999");
-        assert_eq!(canonical.messages[0].extra.get("metadata_turn").unwrap(), "turn1");
+        assert_eq!(
+            canonical.messages[0].extra.get("metadata_turn").unwrap(),
+            "turn1"
+        );
 
         let exported = canonical.to_anthropic().unwrap();
         assert_eq!(exported["user_id"], "usr_999");
@@ -1480,8 +1943,15 @@ mod tests {
             id: String::new(),
             model: "claude-3-7-sonnet".to_string(),
             content: vec![
-                ContentBlock::Thinking { thinking: "Let me think...".to_string(), signature: None, extra: Map::new() },
-                ContentBlock::Text { text: "Here is the answer.".to_string(), extra: Map::new() },
+                ContentBlock::Thinking {
+                    thinking: "Let me think...".to_string(),
+                    signature: None,
+                    extra: Map::new(),
+                },
+                ContentBlock::Text {
+                    text: "Here is the answer.".to_string(),
+                    extra: Map::new(),
+                },
             ],
             stop_reason: Some("end_turn".to_string()),
             usage: Usage::default(),
@@ -1521,7 +1991,10 @@ mod tests {
             messages: vec![
                 Message {
                     role: "user".to_string(),
-                    content: vec![ContentBlock::Text { text: "Hello".to_string(), extra: Map::new() }],
+                    content: vec![ContentBlock::Text {
+                        text: "Hello".to_string(),
+                        extra: Map::new(),
+                    }],
                     extra: Map::new(),
                 },
                 Message {
@@ -1568,7 +2041,10 @@ mod tests {
         let gemini_json = req.to_gemini().unwrap();
         let gemini_json = req.to_gemini().unwrap();
         assert_eq!(gemini_json["model"], "gemini-2.5-pro");
-        assert_eq!(gemini_json["system_instruction"], "You are a helpful assistant.");
+        assert_eq!(
+            gemini_json["system_instruction"],
+            "You are a helpful assistant."
+        );
         let input = gemini_json["input"].as_array().unwrap();
         assert_eq!(input[0]["type"], "user_input");
         assert_eq!(input[0]["content"][0]["text"], "Hello");
@@ -1580,7 +2056,10 @@ mod tests {
         assert_eq!(input[3]["call_id"], "call_1");
         assert_eq!(input[3]["name"], "get_weather");
         assert_eq!(input[3]["result"][0]["text"], "{\"temp\":20}");
-        assert_eq!(gemini_json["tools"][0]["function_declarations"][0]["name"], "get_weather");
+        assert_eq!(
+            gemini_json["tools"][0]["function_declarations"][0]["name"],
+            "get_weather"
+        );
     }
 
     #[test]
@@ -1594,7 +2073,11 @@ mod tests {
             "max_tokens": 100
         });
 
-        let from_openai = Request::try_from(WirePayload::OpenAi(&openai_req, OpenAiApiVersion::ChatCompletions)).unwrap();
+        let from_openai = Request::try_from(WirePayload::OpenAi(
+            &openai_req,
+            OpenAiApiVersion::ChatCompletions,
+        ))
+        .unwrap();
         assert_eq!(from_openai.model, "gpt-4o");
         assert_eq!(from_openai.system, Some("Be concise.".to_string()));
         assert_eq!(from_openai.messages.len(), 1);
@@ -1610,14 +2093,20 @@ mod tests {
         let from_gemini = Request::try_from(WirePayload::Gemini(&gemini_req)).unwrap();
         assert_eq!(from_gemini.model, "gemini-3.8-flash");
         assert_eq!(from_gemini.messages[0].role, "user");
-        assert_eq!(match &from_gemini.messages[0].content[0] {
-            ContentBlock::Text { text, .. } => text,
-            _ => panic!("Expected text block"),
-        }, "Hi from user");
-        assert_eq!(match &from_gemini.messages[0].content[0] {
-            ContentBlock::Text { text, .. } => text,
-            _ => panic!("Expected text block"),
-        }, "Hi from user");
+        assert_eq!(
+            match &from_gemini.messages[0].content[0] {
+                ContentBlock::Text { text, .. } => text,
+                _ => panic!("Expected text block"),
+            },
+            "Hi from user"
+        );
+        assert_eq!(
+            match &from_gemini.messages[0].content[0] {
+                ContentBlock::Text { text, .. } => text,
+                _ => panic!("Expected text block"),
+            },
+            "Hi from user"
+        );
     }
 
     #[test]
@@ -1632,14 +2121,22 @@ mod tests {
             "max_output_tokens": 500
         });
 
-        let req = Request::try_from(WirePayload::OpenAi(&openai_req, OpenAiApiVersion::ChatCompletions)).unwrap();
+        let req = Request::try_from(WirePayload::OpenAi(
+            &openai_req,
+            OpenAiApiVersion::ChatCompletions,
+        ))
+        .unwrap();
         assert_eq!(req.max_tokens, Some(500));
         assert_eq!(req.messages.len(), 3);
         let tool_msg = &req.messages[2];
         assert_eq!(tool_msg.role, "tool");
         assert_eq!(tool_msg.content.len(), 1);
         match &tool_msg.content[0] {
-            ContentBlock::ToolResult { tool_use_id, content, .. } => {
+            ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                ..
+            } => {
                 assert_eq!(tool_use_id, "call_1");
                 assert_eq!(content.as_str().unwrap(), "Sunny 22C");
             }

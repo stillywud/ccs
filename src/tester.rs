@@ -39,6 +39,7 @@ fn probe_provider(base_url: &str, api_key: &str, api_format: ApiFormat) -> Provi
         port: None,
         test_model: None,
         max_tokens_cap: None,
+        extra_headers: Default::default(),
     }
 }
 
@@ -464,11 +465,9 @@ async fn parse_models_response(r: reqwest::Response) -> (Option<usize>, Option<V
         let names: Vec<String> = models
             .iter()
             .filter_map(|m| {
-                m["name"].as_str().map(|n| {
-                    n.strip_prefix("models/")
-                        .unwrap_or(n)
-                        .to_string()
-                })
+                m["name"]
+                    .as_str()
+                    .map(|n| n.strip_prefix("models/").unwrap_or(n).to_string())
             })
             .collect();
         return (Some(names.len()), Some(names));
@@ -523,6 +522,7 @@ pub(crate) mod tests {
             port: None,
             test_model: None,
             max_tokens_cap: None,
+            extra_headers: Default::default(),
         }
     }
 
@@ -542,10 +542,10 @@ pub(crate) mod tests {
     /// back to the unforced attempt instead of reporting "no tool support".
     #[tokio::test]
     async fn check_tool_support_falls_back_when_forced_choice_is_rejected() {
+        use axum::Json;
         use axum::http::StatusCode;
         use axum::response::IntoResponse;
         use axum::routing::post;
-        use axum::Json;
 
         async fn chat(body: axum::body::Bytes) -> impl IntoResponse {
             let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
@@ -641,6 +641,7 @@ pub(crate) mod tests {
             port: None,
             test_model: None,
             max_tokens_cap: None,
+            extra_headers: Default::default(),
         };
 
         let started = tokio::time::Instant::now();
@@ -652,10 +653,10 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn test_latency_includes_upstream_error_message_on_429() {
+        use axum::Json;
         use axum::http::StatusCode;
         use axum::response::IntoResponse;
         use axum::routing::post;
-        use axum::Json;
 
         async fn chat() -> impl IntoResponse {
             (

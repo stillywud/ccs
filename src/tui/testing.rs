@@ -116,6 +116,7 @@ pub(crate) mod tests {
             port: None,
             test_model: None,
             max_tokens_cap: None,
+            extra_headers: Default::default(),
         }
     }
 
@@ -518,7 +519,9 @@ pub(crate) mod tests {
     /// Format field now holds a typed OpenAI choice — the keypress wins.
     #[tokio::test]
     async fn manual_format_overrides_typed_format_field() {
-        use crate::tui::state::{API_KEY_FIELD_IDX, BASE_URL_FIELD_IDX, FORMAT_FIELD_IDX, NAME_FIELD_IDX};
+        use crate::tui::state::{
+            API_KEY_FIELD_IDX, BASE_URL_FIELD_IDX, FORMAT_FIELD_IDX, NAME_FIELD_IDX,
+        };
 
         let _guard = ConfigDirGuard::new();
         let mut app = app_with_current("first");

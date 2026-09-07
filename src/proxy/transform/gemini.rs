@@ -35,8 +35,6 @@ fn model_id(req: &Value) -> &str {
     req.get("model").and_then(|m| m.as_str()).unwrap_or("")
 }
 
-
-
 /// Content blocks of an Anthropic message (string content becomes one text).
 fn message_blocks(msg: &Value) -> Vec<Value> {
     match msg.get("content") {
@@ -130,10 +128,8 @@ pub fn anthropic_to_gemini_request(req: &Value, provider: &Provider) -> Result<V
                                 );
                                 continue;
                             }
-                            let arguments = block
-                                .get("input")
-                                .cloned()
-                                .unwrap_or_else(|| json!({}));
+                            let arguments =
+                                block.get("input").cloned().unwrap_or_else(|| json!({}));
                             input.push(json!({
                                 "type": "function_call",
                                 "id": id,
@@ -156,7 +152,9 @@ pub fn anthropic_to_gemini_request(req: &Value, provider: &Provider) -> Result<V
                                 had_signed_thought = true;
                                 input.push(json!({"type": "thought", "signature": sig}));
                             } else {
-                                tracing::warn!("dropped signature-less thinking block from Gemini history");
+                                tracing::warn!(
+                                    "dropped signature-less thinking block from Gemini history"
+                                );
                             }
                         }
                         _ => {}
@@ -278,14 +276,13 @@ fn tool_result_to_function_result(block: &Value, id_to_name: &ToolIdMap) -> Resu
         .and_then(|i| i.as_str())
         .unwrap_or_default()
         .to_string();
-    let name = id_to_name
-        .get(&call_id)
-        .cloned()
-        .unwrap_or_default();
+    let name = id_to_name.get(&call_id).cloned().unwrap_or_default();
     if name.is_empty() {
         // Without a name the pair cannot be reconstructed; the upstream would
         // reject the step. Log and keep the call id so the failure is debuggable.
-        tracing::warn!("tool_result for unknown tool_use_id '{call_id}'; dropped from Gemini request");
+        tracing::warn!(
+            "tool_result for unknown tool_use_id '{call_id}'; dropped from Gemini request"
+        );
         return Err(AppError::Transform(format!(
             "tool_result references unknown tool_use_id '{call_id}'"
         )));
@@ -298,7 +295,6 @@ fn tool_result_to_function_result(block: &Value, id_to_name: &ToolIdMap) -> Resu
         "result": [{"type": "text", "text": text}],
     }))
 }
-
 
 // ─── Non-streaming response ────────────────────────────────────────────────
 
@@ -335,10 +331,7 @@ pub fn gemini_to_anthropic_response(resp: &Value) -> Result<Value> {
             Some("function_call") => {
                 let id = step.get("id").and_then(|i| i.as_str()).unwrap_or("");
                 let name = step.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                let input = step
-                    .get("arguments")
-                    .cloned()
-                    .unwrap_or_else(|| json!({}));
+                let input = step.get("arguments").cloned().unwrap_or_else(|| json!({}));
                 content.push(json!({
                     "type": "tool_use",
                     "id": if id.is_empty() { synthesized_tool_id() } else { id.to_string() },
@@ -367,7 +360,11 @@ pub fn gemini_to_anthropic_response(resp: &Value) -> Result<Value> {
         content.push(json!({"type": "text", "text": ""}));
     }
 
-    let stop_reason = if last_step_was_tool { "tool_use" } else { "end_turn" };
+    let stop_reason = if last_step_was_tool {
+        "tool_use"
+    } else {
+        "end_turn"
+    };
     let usage = gemini_usage(resp);
     let model = resp
         .get("model")
@@ -388,7 +385,10 @@ pub fn gemini_to_anthropic_response(resp: &Value) -> Result<Value> {
 }
 
 fn gemini_image_to_anthropic(item: &Value) -> Value {
-    let mime = item.get("mime_type").and_then(|m| m.as_str()).unwrap_or("image/png");
+    let mime = item
+        .get("mime_type")
+        .and_then(|m| m.as_str())
+        .unwrap_or("image/png");
     let data = item.get("data").and_then(|d| d.as_str()).unwrap_or("");
     json!({
         "type": "image",
@@ -422,7 +422,9 @@ pub fn gemini_stream_to_anthropic(
     summaries: bool,
 ) -> impl Stream<Item = std::result::Result<bytes::Bytes, std::io::Error>> {
     use futures::StreamExt;
-    let mapped = response.bytes_stream().map(|r| r.map_err(std::io::Error::other));
+    let mapped = response
+        .bytes_stream()
+        .map(|r| r.map_err(std::io::Error::other));
     translate_gemini_sse(mapped, summaries)
 }
 
@@ -623,7 +625,9 @@ impl GeminiStreamState {
     }
 
     fn on_step_start(&mut self, data: &Value) -> Vec<String> {
-        let Some(step) = data.get("step") else { return Vec::new() };
+        let Some(step) = data.get("step") else {
+            return Vec::new();
+        };
         let Some(step_type) = step.get("type").and_then(|t| t.as_str()) else {
             return Vec::new();
         };
@@ -654,7 +658,11 @@ impl GeminiStreamState {
                 self.last_step_was_tool = true;
                 let id = step.get("id").and_then(|i| i.as_str()).unwrap_or("");
                 let name = step.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                let id = if id.is_empty() { synthesized_tool_id() } else { id.to_string() };
+                let id = if id.is_empty() {
+                    synthesized_tool_id()
+                } else {
+                    id.to_string()
+                };
                 events.extend(self.open_block(BlockKind::ToolUse, move |index| {
                     sse_event(
                         "content_block_start",
@@ -685,7 +693,9 @@ impl GeminiStreamState {
 
     fn on_step_delta(&mut self, data: &Value) -> Vec<String> {
         let mut events = self.message_start();
-        let Some(delta) = data.get("delta") else { return events };
+        let Some(delta) = data.get("delta") else {
+            return events;
+        };
         match delta.get("type").and_then(|t| t.as_str()) {
             Some("text") => {
                 if let Some(text) = delta.get("text").and_then(|t| t.as_str())
@@ -707,7 +717,10 @@ impl GeminiStreamState {
             Some("thought_summary") if self.summaries => {
                 if let Some(text) = delta["content"]["text"].as_str()
                     && !text.is_empty()
-                    && self.open.as_ref().is_some_and(|o| o.kind == BlockKind::Thinking)
+                    && self
+                        .open
+                        .as_ref()
+                        .is_some_and(|o| o.kind == BlockKind::Thinking)
                 {
                     let index = self.open.as_ref().unwrap().index;
                     events.push(sse_event(
@@ -728,7 +741,10 @@ impl GeminiStreamState {
             Some("arguments_delta") => {
                 if let Some(args) = delta.get("arguments").and_then(|a| a.as_str())
                     && !args.is_empty()
-                    && self.open.as_ref().is_some_and(|o| o.kind == BlockKind::ToolUse)
+                    && self
+                        .open
+                        .as_ref()
+                        .is_some_and(|o| o.kind == BlockKind::ToolUse)
                 {
                     events.extend(self.input_json_delta(args));
                 }
@@ -811,8 +827,12 @@ impl GeminiStreamState {
     }
 
     fn usage_from(&mut self, interaction: &Value) {
-        let Some(usage) = interaction.get("usage") else { return };
-        if let Ok(u) = super::canonical::Usage::try_from(super::canonical::WirePayload::Gemini(usage)) {
+        let Some(usage) = interaction.get("usage") else {
+            return;
+        };
+        if let Ok(u) =
+            super::canonical::Usage::try_from(super::canonical::WirePayload::Gemini(usage))
+        {
             self.usage = u;
         }
     }
@@ -869,7 +889,6 @@ impl GeminiStreamState {
     }
 }
 
-
 fn compact_json(v: &Value) -> Option<String> {
     if v.is_object() && v.as_object().is_some_and(|o| !o.is_empty()) {
         serde_json::to_string(v).ok()
@@ -877,7 +896,6 @@ fn compact_json(v: &Value) -> Option<String> {
         None
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -903,6 +921,7 @@ mod tests {
             port: None,
             test_model: None,
             max_tokens_cap: None,
+            extra_headers: Default::default(),
         }
     }
 
@@ -1037,7 +1056,10 @@ mod tests {
         let input = out["input"].as_array().unwrap();
         assert!(!input.iter().any(|s| s["type"] == "function_call"));
         assert!(!input.iter().any(|s| s["type"] == "thought"));
-        let result = input.iter().find(|s| s["type"] == "function_result").unwrap();
+        let result = input
+            .iter()
+            .find(|s| s["type"] == "function_result")
+            .unwrap();
         assert_eq!(result["name"], "get_weather");
         assert_eq!(result["result"][0]["text"], "22C sunny");
     }
@@ -1167,20 +1189,34 @@ mod tests {
     fn stream_emits_canonical_events_for_text_and_usage() {
         let mut state = GeminiStreamState::new(false);
         let mut raw = Vec::new();
-        raw.extend(state.process_event("interaction.created", &json!({
-            "interaction": {"model": "gemini-3.8-flash", "status": "in_progress"},
-            "event_type": "interaction.created"
-        })));
-        raw.extend(state.process_event("step.start", &json!({
-            "index": 0, "step": {"type": "model_output"}, "event_type": "step.start"
-        })));
-        raw.extend(state.process_event("step.delta", &json!({
-            "index": 0, "delta": {"type": "text", "text": "Hello "}, "event_type": "step.delta"
-        })));
-        raw.extend(state.process_event("step.delta", &json!({
-            "index": 0, "delta": {"type": "text", "text": "world"}, "event_type": "step.delta"
-        })));
-        raw.extend(state.process_event("step.stop", &json!({"index": 0, "event_type": "step.stop"})));
+        raw.extend(state.process_event(
+            "interaction.created",
+            &json!({
+                "interaction": {"model": "gemini-3.8-flash", "status": "in_progress"},
+                "event_type": "interaction.created"
+            }),
+        ));
+        raw.extend(state.process_event(
+            "step.start",
+            &json!({
+                "index": 0, "step": {"type": "model_output"}, "event_type": "step.start"
+            }),
+        ));
+        raw.extend(state.process_event(
+            "step.delta",
+            &json!({
+                "index": 0, "delta": {"type": "text", "text": "Hello "}, "event_type": "step.delta"
+            }),
+        ));
+        raw.extend(state.process_event(
+            "step.delta",
+            &json!({
+                "index": 0, "delta": {"type": "text", "text": "world"}, "event_type": "step.delta"
+            }),
+        ));
+        raw.extend(
+            state.process_event("step.stop", &json!({"index": 0, "event_type": "step.stop"})),
+        );
         raw.extend(state.process_event("interaction.completed", &json!({
             "interaction": {
                 "status": "completed",
@@ -1194,8 +1230,13 @@ mod tests {
         assert_eq!(
             types,
             vec![
-                "message_start", "content_block_start", "content_block_delta",
-                "content_block_delta", "content_block_stop", "message_delta", "message_stop"
+                "message_start",
+                "content_block_start",
+                "content_block_delta",
+                "content_block_delta",
+                "content_block_stop",
+                "message_delta",
+                "message_stop"
             ]
         );
         assert_eq!(events[0].1["message"]["model"], "gemini-3.8-flash");
@@ -1210,10 +1251,13 @@ mod tests {
     #[test]
     fn stream_maps_function_call_with_streaming_arguments() {
         let mut state = GeminiStreamState::new(false);
-        let mut raw = state.process_event("interaction.created", &json!({
-            "interaction": {"model": "gemini-3.8-flash", "status": "in_progress"},
-            "event_type": "interaction.created"
-        }));
+        let mut raw = state.process_event(
+            "interaction.created",
+            &json!({
+                "interaction": {"model": "gemini-3.8-flash", "status": "in_progress"},
+                "event_type": "interaction.created"
+            }),
+        );
         raw.extend(state.process_event("step.start", &json!({
             "index": 0, "step": {"type": "function_call", "id": "call_9", "name": "get_weather", "arguments": {}},
             "event_type": "step.start"
@@ -1222,18 +1266,29 @@ mod tests {
             "index": 0, "delta": {"type": "arguments_delta", "arguments": "{\"city\": \"Paris\"}"},
             "event_type": "step.delta"
         })));
-        raw.extend(state.process_event("step.stop", &json!({"index": 0, "event_type": "step.stop"})));
-        raw.extend(state.process_event("interaction.completed", &json!({
-            "interaction": {"status": "completed", "usage": {"total_output_tokens": 12}},
-            "event_type": "interaction.completed"
-        })));
+        raw.extend(
+            state.process_event("step.stop", &json!({"index": 0, "event_type": "step.stop"})),
+        );
+        raw.extend(state.process_event(
+            "interaction.completed",
+            &json!({
+                "interaction": {"status": "completed", "usage": {"total_output_tokens": 12}},
+                "event_type": "interaction.completed"
+            }),
+        ));
 
         let events = parse_events(&raw);
-        let start = events.iter().find(|(t, _)| t == "content_block_start").unwrap();
+        let start = events
+            .iter()
+            .find(|(t, _)| t == "content_block_start")
+            .unwrap();
         assert_eq!(start.1["content_block"]["type"], "tool_use");
         assert_eq!(start.1["content_block"]["id"], "call_9");
         assert_eq!(start.1["content_block"]["name"], "get_weather");
-        let delta = events.iter().find(|(t, _)| t == "content_block_delta").unwrap();
+        let delta = events
+            .iter()
+            .find(|(t, _)| t == "content_block_delta")
+            .unwrap();
         assert_eq!(delta.1["delta"]["type"], "input_json_delta");
         assert_eq!(delta.1["delta"]["partial_json"], "{\"city\": \"Paris\"}");
         let done = events.iter().find(|(t, _)| t == "message_delta").unwrap();
@@ -1244,27 +1299,44 @@ mod tests {
     fn stream_surfaces_thought_signature_even_without_summaries() {
         let mut raw = Vec::new();
         let mut state = GeminiStreamState::new(false);
-        raw.extend(state.process_event("interaction.created", &json!({
-            "interaction": {"model": "gemini-3.8-flash", "status": "in_progress"},
-            "event_type": "interaction.created"
-        })));
+        raw.extend(state.process_event(
+            "interaction.created",
+            &json!({
+                "interaction": {"model": "gemini-3.8-flash", "status": "in_progress"},
+                "event_type": "interaction.created"
+            }),
+        ));
         // Thought step with only a signature — the signature must still reach
         // the client so the next tool-calling turn can be replayed upstream.
-        raw.extend(state.process_event("step.start", &json!({
-            "index": 0, "step": {"type": "thought"}, "event_type": "step.start"
-        })));
-        raw.extend(state.process_event("step.delta", &json!({
-            "index": 0, "delta": {"type": "thought_signature", "signature": "sig-1"},
-            "event_type": "step.delta"
-        })));
-        raw.extend(state.process_event("step.stop", &json!({"index": 0, "event_type": "step.stop"})));
-        raw.extend(state.process_event("interaction.completed", &json!({
-            "interaction": {"status": "completed", "usage": {"total_output_tokens": 3}},
-            "event_type": "interaction.completed"
-        })));
+        raw.extend(state.process_event(
+            "step.start",
+            &json!({
+                "index": 0, "step": {"type": "thought"}, "event_type": "step.start"
+            }),
+        ));
+        raw.extend(state.process_event(
+            "step.delta",
+            &json!({
+                "index": 0, "delta": {"type": "thought_signature", "signature": "sig-1"},
+                "event_type": "step.delta"
+            }),
+        ));
+        raw.extend(
+            state.process_event("step.stop", &json!({"index": 0, "event_type": "step.stop"})),
+        );
+        raw.extend(state.process_event(
+            "interaction.completed",
+            &json!({
+                "interaction": {"status": "completed", "usage": {"total_output_tokens": 3}},
+                "event_type": "interaction.completed"
+            }),
+        ));
 
         let events = parse_events(&raw);
-        let start = events.iter().find(|(t, _)| t == "content_block_start").unwrap();
+        let start = events
+            .iter()
+            .find(|(t, _)| t == "content_block_start")
+            .unwrap();
         assert_eq!(start.1["content_block"]["type"], "thinking");
         // No summaries were requested, so no readable thinking deltas…
         let text_deltas: Vec<&Value> = events
@@ -1281,29 +1353,46 @@ mod tests {
     fn stream_forwards_thought_blocks_with_signature_when_requested() {
         let mut raw = Vec::new();
         let mut state = GeminiStreamState::new(true);
-        raw.extend(state.process_event("interaction.created", &json!({
-            "interaction": {"model": "gemini-3.8-flash", "status": "in_progress"},
-            "event_type": "interaction.created"
-        })));
-        raw.extend(state.process_event("step.start", &json!({
-            "index": 0, "step": {"type": "thought"}, "event_type": "step.start"
-        })));
+        raw.extend(state.process_event(
+            "interaction.created",
+            &json!({
+                "interaction": {"model": "gemini-3.8-flash", "status": "in_progress"},
+                "event_type": "interaction.created"
+            }),
+        ));
+        raw.extend(state.process_event(
+            "step.start",
+            &json!({
+                "index": 0, "step": {"type": "thought"}, "event_type": "step.start"
+            }),
+        ));
         raw.extend(state.process_event("step.delta", &json!({
             "index": 0, "delta": {"type": "thought_summary", "content": {"type": "text", "text": "I need the GCD..."}},
             "event_type": "step.delta"
         })));
-        raw.extend(state.process_event("step.delta", &json!({
-            "index": 0, "delta": {"type": "thought_signature", "signature": "sig-1"},
-            "event_type": "step.delta"
-        })));
-        raw.extend(state.process_event("step.stop", &json!({"index": 0, "event_type": "step.stop"})));
-        raw.extend(state.process_event("interaction.completed", &json!({
-            "interaction": {"status": "completed", "usage": {"total_output_tokens": 5}},
-            "event_type": "interaction.completed"
-        })));
+        raw.extend(state.process_event(
+            "step.delta",
+            &json!({
+                "index": 0, "delta": {"type": "thought_signature", "signature": "sig-1"},
+                "event_type": "step.delta"
+            }),
+        ));
+        raw.extend(
+            state.process_event("step.stop", &json!({"index": 0, "event_type": "step.stop"})),
+        );
+        raw.extend(state.process_event(
+            "interaction.completed",
+            &json!({
+                "interaction": {"status": "completed", "usage": {"total_output_tokens": 5}},
+                "event_type": "interaction.completed"
+            }),
+        ));
 
         let events = parse_events(&raw);
-        let start = events.iter().find(|(t, _)| t == "content_block_start").unwrap();
+        let start = events
+            .iter()
+            .find(|(t, _)| t == "content_block_start")
+            .unwrap();
         assert_eq!(start.1["content_block"]["type"], "thinking");
         let deltas: Vec<&Value> = events
             .iter()
@@ -1362,7 +1451,10 @@ mod tests {
         assert!(out.contains("\"output_tokens\":87"), "{out}");
         assert!(out.contains("\"input_tokens\":8"), "{out}");
         assert!(out.contains("\"cache_read_input_tokens\":25"), "{out}");
-        assert!(!out.contains("total_thought_tokens"), "raw usage leaked: {out}");
+        assert!(
+            !out.contains("total_thought_tokens"),
+            "raw usage leaked: {out}"
+        );
     }
 }
 
@@ -1405,11 +1497,22 @@ mod replay_tests {
             ]
         });
         let p = Provider {
-            id: "t".into(), base_url: "https://x".into(), api_key: "k".into(),
+            id: "t".into(),
+            base_url: "https://x".into(),
+            api_key: "k".into(),
             api_format: crate::config::ApiFormat::Gemini,
-            model_map: Default::default(), routes: vec![], enabled: true, fallback: true,
-            api_version: None, inject_thinking_history: true, strict_thinking_history: false,
-            quota_command: None, port: None, test_model: None, max_tokens_cap: None,
+            model_map: Default::default(),
+            routes: vec![],
+            enabled: true,
+            fallback: true,
+            api_version: None,
+            inject_thinking_history: true,
+            strict_thinking_history: false,
+            quota_command: None,
+            port: None,
+            test_model: None,
+            max_tokens_cap: None,
+            extra_headers: Default::default(),
         };
         let out = anthropic_to_gemini_request(&req, &p).unwrap();
         let steps = out["input"].as_array().unwrap();

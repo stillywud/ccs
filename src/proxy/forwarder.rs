@@ -1,4 +1,4 @@
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, HeaderName, HeaderValue};
 use bytes::Bytes;
 use reqwest::Client;
 
@@ -23,6 +23,29 @@ const FILTERED_HEADERS: &[&str] = &[
 
 fn should_forward_header(name: &str) -> bool {
     !FILTERED_HEADERS.contains(&name) && !name.starts_with("anthropic-")
+}
+
+/// Attach a provider's configured `extra_headers` to an outgoing request
+/// builder, resolving `$ENV_VAR` values at send time. Header names or values
+/// that are invalid HTTP header syntax are skipped with a warning rather than
+/// panicking inside reqwest.
+fn apply_extra_headers(
+    mut request: reqwest::RequestBuilder,
+    provider: &Provider,
+) -> reqwest::RequestBuilder {
+    if provider.extra_headers.is_empty() {
+        return request;
+    }
+    for (name, value) in provider.resolved_extra_headers() {
+        match (
+            HeaderName::from_bytes(name.as_bytes()),
+            HeaderValue::from_str(&value),
+        ) {
+            (Ok(n), Ok(v)) => request = request.header(n, v),
+            _ => tracing::warn!("extra_header {name} rejected: invalid header name or value"),
+        }
+    }
+    request
 }
 
 /// Build the GET /v1/models request for a provider. Anthropic-format
@@ -60,7 +83,7 @@ pub fn models_request_at(
             .header("anthropic-version", "2023-06-01")
             .header("authorization", format!("Bearer {api_key}"));
     }
-    req
+    apply_extra_headers(req, provider)
 }
 
 /// The scheme+host(+port) root of `base_url`; `None` if `base_url` is
@@ -116,14 +139,70 @@ pub async fn forward_request(
     request = request.header("content-type", "application/json");
     request = request.body(body);
 
+    request = apply_extra_headers(request, provider);
+
     let response = request.send().await?;
     Ok(response)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::should_forward_header;
+    use super::*;
+    use crate::config::ApiFormat;
+    use std::collections::HashMap;
 
+    fn provider_with_extra_headers(extra: HashMap<String, String>) -> Provider {
+        Provider {
+            id: "test-id".into(),
+            base_url: "https://api.example.com".into(),
+            api_key: "key".into(),
+            api_format: ApiFormat::Anthropic,
+            model_map: HashMap::new(),
+            routes: Vec::new(),
+            enabled: true,
+            fallback: false,
+            api_version: None,
+            inject_thinking_history: true,
+            strict_thinking_history: false,
+            quota_command: None,
+            port: None,
+            test_model: None,
+            max_tokens_cap: None,
+            extra_headers: extra,
+        }
+    }
+
+    #[test]
+    fn models_request_injects_extra_headers() {
+        let client = Client::new();
+        let mut extra = HashMap::new();
+        extra.insert("x-opencode-session".into(), "sess-123".into());
+        let provider = provider_with_extra_headers(extra);
+        let req = models_request(&client, &provider, "key").build().unwrap();
+        assert_eq!(req.headers().get("x-opencode-session").unwrap(), "sess-123");
+    }
+
+    #[test]
+    fn models_request_without_extra_headers_has_none() {
+        let client = Client::new();
+        let provider = provider_with_extra_headers(HashMap::new());
+        let req = models_request(&client, &provider, "key").build().unwrap();
+        assert!(req.headers().get("x-opencode-session").is_none());
+    }
+
+    #[test]
+    fn invalid_extra_header_names_and_values_are_skipped() {
+        let client = Client::new();
+        let mut extra = HashMap::new();
+        extra.insert("x-ok".into(), "fine".into());
+        extra.insert("x-bad name".into(), "v".into()); // space in header name
+        extra.insert("x-newline".into(), "v\nbad".into()); // newline in value
+        let provider = provider_with_extra_headers(extra);
+        let req = models_request(&client, &provider, "key").build().unwrap();
+        assert_eq!(req.headers().get("x-ok").unwrap(), "fine");
+        assert!(req.headers().get("x-bad name").is_none());
+        assert!(req.headers().get("x-newline").is_none());
+    }
     #[test]
     fn filters_hop_auth_and_payload_headers() {
         for header in [

@@ -239,7 +239,6 @@ impl App {
         self.providers.table_state.select(Some(idx));
     }
 
-
     pub fn move_provider_up(&mut self) -> Result<()> {
         let Some(idx) = self.providers.table_state.selected() else {
             return Ok(());

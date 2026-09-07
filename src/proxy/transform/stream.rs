@@ -2049,6 +2049,7 @@ mod tests {
             port: None,
             test_model: None,
             max_tokens_cap: None,
+            extra_headers: HashMap::new(),
         };
 
         // Round 1: Claude Code request (thinking on) -> upstream OpenAI request
@@ -2158,6 +2159,7 @@ mod tests {
             port: None,
             test_model: None,
             max_tokens_cap: None,
+            extra_headers: HashMap::new(),
         };
 
         let ids = ["call_00_AAAA", "call_00_BBBB"];
@@ -2251,6 +2253,7 @@ mod tests {
             port: None,
             test_model: None,
             max_tokens_cap: None,
+            extra_headers: HashMap::new(),
         };
         let upstream_call_id = "call_00_5d8FPybV7Lq0m3CfOW2O9183";
 

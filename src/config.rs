@@ -186,6 +186,10 @@ pub struct Provider {
     /// `None` = pass the client's limit through untouched.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens_cap: Option<u64>,
+    /// Extra request headers to add to every upstream request. Values
+    /// starting with `$` are read from the environment variable they name.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub extra_headers: HashMap<String, String>,
 }
 
 /// Upstream wire format a provider speaks. The proxy normalises client
@@ -252,19 +256,22 @@ impl Provider {
     }
 }
 
-/// Resolve a configured API key: if it starts with '$', read from the
-/// environment variable it names. Free function (not just `Provider::
-/// resolve_api_key`) so callers that only have a raw key string — not a
-/// full `Provider` — don't need to hand-roll the same `$`-prefix parsing.
-pub fn resolve_api_key_str(raw: &str) -> Result<String> {
-    if let Some(env_var) = raw.strip_prefix('$') {
-        std::env::var(env_var).map_err(|e| {
-            tracing::warn!("Failed to resolve API key from env var: {e}");
-            AppError::Config("API key environment variable not found or invalid".to_string())
-        })
-    } else {
-        Ok(raw.to_string())
+/// Expand a `$ENV_VAR`-prefixed string to its environment value; a literal
+/// (no `$` prefix) is returned unchanged. Callers decide how to handle a
+/// missing variable (skip vs. hard-fail).
+pub fn resolve_env_str(raw: &str) -> Option<String> {
+    match raw.strip_prefix('$') {
+        None => Some(raw.to_string()),
+        Some(env_var) => std::env::var(env_var).ok(),
     }
+}
+
+/// Resolve a configured API key: if it starts with '$', read from environment variable.
+pub fn resolve_api_key_str(raw: &str) -> Result<String> {
+    resolve_env_str(raw).ok_or_else(|| {
+        tracing::warn!("Failed to resolve API key from env var: {raw}");
+        AppError::Config("API key environment variable not found or invalid".to_string())
+    })
 }
 
 impl Provider {
@@ -280,6 +287,21 @@ impl Provider {
             // Gemini authenticates with the raw API key (see the Gemini REST docs).
             ApiFormat::Gemini => ("x-goog-api-key", api_key.to_string()),
         }
+    }
+
+    /// Resolve `extra_headers`, expanding `$ENV_VAR` values into their
+    /// environment values. Missing environment variables are skipped with a
+    /// warning naming the header and the variable.
+    pub fn resolved_extra_headers(&self) -> HashMap<String, String> {
+        let mut out = HashMap::new();
+        for (name, raw) in &self.extra_headers {
+            let Some(value) = resolve_env_str(raw) else {
+                tracing::warn!("extra_header {name}: env var {raw} missing, skipping");
+                continue;
+            };
+            out.insert(name.clone(), value);
+        }
+        out
     }
 
     /// Map model name using model_map, or return original.
@@ -770,7 +792,49 @@ mod tests {
             port: None,
             test_model: None,
             max_tokens_cap: None,
+            extra_headers: HashMap::new(),
         }
+    }
+
+    #[test]
+    fn resolved_extra_headers_expands_env_and_keeps_literals() {
+        unsafe { std::env::set_var("TEST_CCS_HEADER_VAR", "env-val-1") };
+        let mut p = make_provider("key", ApiFormat::Anthropic);
+        p.extra_headers
+            .insert("x-opencode-session".into(), "$TEST_CCS_HEADER_VAR".into());
+        p.extra_headers
+            .insert("x-static".into(), "static-val".into());
+        let resolved = p.resolved_extra_headers();
+        assert_eq!(
+            resolved.get("x-opencode-session").map(String::as_str),
+            Some("env-val-1")
+        );
+        assert_eq!(
+            resolved.get("x-static").map(String::as_str),
+            Some("static-val")
+        );
+        unsafe { std::env::remove_var("TEST_CCS_HEADER_VAR") };
+    }
+
+    #[test]
+    fn resolved_extra_headers_skips_missing_env_var() {
+        unsafe { std::env::remove_var("TEST_CCS_MISSING_HEADER_VAR") };
+        let mut p = make_provider("key", ApiFormat::Anthropic);
+        p.extra_headers
+            .insert("x-missing".into(), "$TEST_CCS_MISSING_HEADER_VAR".into());
+        assert!(p.resolved_extra_headers().is_empty());
+    }
+
+    #[test]
+    fn resolve_env_str_literal_and_env() {
+        assert_eq!(resolve_env_str("plain"), Some("plain".to_string()));
+        unsafe { std::env::set_var("TEST_CCS_ENV_STR", "env-xyz") };
+        assert_eq!(
+            resolve_env_str("$TEST_CCS_ENV_STR"),
+            Some("env-xyz".to_string())
+        );
+        unsafe { std::env::remove_var("TEST_CCS_ENV_STR") };
+        assert_eq!(resolve_env_str("$TEST_CCS_ENV_STR"), None);
     }
 
     #[test]
@@ -1067,10 +1131,7 @@ mod tests {
             "https://api.example.com/v1beta/interactions"
         );
         let (url, body) = p.chat_url_and_body("gemini-3.8-flash");
-        assert_eq!(
-            url,
-            "https://api.example.com/v1beta/interactions"
-        );
+        assert_eq!(url, "https://api.example.com/v1beta/interactions");
         assert!(body.contains("\"input\":\"ping\""));
     }
 }
