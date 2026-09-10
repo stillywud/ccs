@@ -58,7 +58,7 @@ pub fn build_router(state: SharedState) -> Router {
 fn build_http_client() -> Client {
     Client::builder()
         .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(300))
+        .read_timeout(Duration::from_secs(300))
         .build()
         .expect("Failed to build HTTP client")
 }
