@@ -334,10 +334,26 @@ fn convert_message(role: &str, msg: &Value, is_responses: bool) -> Result<Vec<Va
     }
 }
 
+fn build_user_message(content_parts: Vec<Value>, is_responses: bool) -> Value {
+    if !is_responses
+        && content_parts.len() == 1
+        && content_parts[0].get("type").and_then(|t| t.as_str()) == Some("text")
+    {
+        // Single text → plain string content
+        json!({
+            "role": "user",
+            "content": content_parts[0].get("text").and_then(|t| t.as_str()).unwrap_or("")
+        })
+    } else if is_responses {
+        json!({"type": "message", "role": "user", "content": content_parts})
+    } else {
+        json!({"role": "user", "content": content_parts})
+    }
+}
+
 fn convert_user_blocks_to_openai(blocks: &[Value], is_responses: bool) -> Result<Vec<Value>> {
     let mut messages = Vec::new();
     let mut content_parts: Vec<Value> = Vec::new();
-    let mut tool_results: Vec<Value> = Vec::new();
 
     for block in blocks {
         let block_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
@@ -374,19 +390,27 @@ fn convert_user_blocks_to_openai(blocks: &[Value], is_responses: bool) -> Result
                 }
             }
             "tool_result" => {
+                // Flush accumulated text before the tool result so the tool
+                // message stays adjacent to the assistant tool_calls turn.
+                if !content_parts.is_empty() {
+                    messages.push(build_user_message(
+                        std::mem::take(&mut content_parts),
+                        is_responses,
+                    ));
+                }
                 let tool_use_id = block
                     .get("tool_use_id")
                     .and_then(|t| t.as_str())
                     .unwrap_or("");
                 let content_text = extract_tool_result_content(block);
                 if is_responses {
-                    tool_results.push(json!({
+                    messages.push(json!({
                         "type": "function_call_output",
                         "call_id": tool_use_id,
                         "output": content_text,
                     }));
                 } else {
-                    tool_results.push(json!({
+                    messages.push(json!({
                         "role": "tool",
                         "tool_call_id": tool_use_id,
                         "content": content_text,
@@ -397,26 +421,10 @@ fn convert_user_blocks_to_openai(blocks: &[Value], is_responses: bool) -> Result
         }
     }
 
-    // Emit user message with content parts if any
+    // Emit user message with remaining content parts if any
     if !content_parts.is_empty() {
-        if !is_responses
-            && content_parts.len() == 1
-            && content_parts[0].get("type").and_then(|t| t.as_str()) == Some("text")
-        {
-            // Single text → plain string content
-            messages.push(json!({
-                "role": "user",
-                "content": content_parts[0].get("text").and_then(|t| t.as_str()).unwrap_or("")
-            }));
-        } else if is_responses {
-            messages.push(json!({"type": "message", "role": "user", "content": content_parts}));
-        } else {
-            messages.push(json!({"role": "user", "content": content_parts}));
-        }
+        messages.push(build_user_message(content_parts, is_responses));
     }
-
-    // Emit tool results
-    messages.extend(tool_results);
 
     if messages.is_empty() {
         if is_responses {
@@ -1716,6 +1724,94 @@ mod tests {
         assert_eq!(msg["role"], "tool");
         assert_eq!(msg["tool_call_id"], "call-1");
         assert_eq!(msg["content"], "sunny");
+    }
+
+    #[test]
+    fn tool_result_stays_adjacent_to_assistant_tool_calls() {
+        // pi continues a failed turn by prepending text blocks to the pending
+        // tool_result in one user message: text must not land between the
+        // assistant tool_calls and the tool result.
+        let req = json!({
+            "model": "m",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "call-1",
+                        "name": "search",
+                        "input": {"query": "rust"}
+                    }]
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": "call-1", "content": "sunny"},
+                        {"type": "text", "text": "note"},
+                        {"type": "text", "text": "continue"}
+                    ]
+                }
+            ],
+            "max_tokens": 10
+        });
+        let out = anthropic_to_openai_request(&req, &provider_chat_completions()).unwrap();
+        let msgs = out["messages"].as_array().unwrap();
+        assert_eq!(msgs[0]["role"], "assistant");
+        assert_eq!(msgs[1]["role"], "tool");
+        assert_eq!(msgs[1]["tool_call_id"], "call-1");
+        assert_eq!(msgs[1]["content"], "sunny");
+        assert_eq!(msgs[2]["role"], "user");
+        assert_eq!(
+            msgs[2]["content"],
+            json!([{"type": "text", "text": "note"}, {"type": "text", "text": "continue"}])
+        );
+    }
+
+    #[test]
+    fn text_before_tool_result_stays_before_it() {
+        let req = json!({
+            "model": "m",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "note"},
+                    {"type": "tool_result", "tool_use_id": "call-1", "content": "sunny"}
+                ]
+            }],
+            "max_tokens": 10
+        });
+        let out = anthropic_to_openai_request(&req, &provider_chat_completions()).unwrap();
+        let msgs = out["messages"].as_array().unwrap();
+        assert_eq!(msgs[0]["role"], "user");
+        assert_eq!(msgs[0]["content"], "note");
+        assert_eq!(msgs[1]["role"], "tool");
+        assert_eq!(msgs[1]["tool_call_id"], "call-1");
+    }
+
+    #[test]
+    fn interleaved_blocks_keep_source_order() {
+        // tool_result → text → tool_result keeps every tool message adjacent
+        // to its own assistant tool_calls, with each text flush in between.
+        let req = json!({
+            "model": "m",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "call-1", "content": "one"},
+                    {"type": "text", "text": "mid"},
+                    {"type": "tool_result", "tool_use_id": "call-2", "content": "two"}
+                ]
+            }],
+            "max_tokens": 10
+        });
+        let out = anthropic_to_openai_request(&req, &provider_chat_completions()).unwrap();
+        let msgs = out["messages"].as_array().unwrap();
+        assert_eq!(msgs[0]["role"], "tool");
+        assert_eq!(msgs[0]["tool_call_id"], "call-1");
+        assert_eq!(msgs[1]["role"], "user");
+        assert_eq!(msgs[1]["content"], "mid");
+        assert_eq!(msgs[2]["role"], "tool");
+        assert_eq!(msgs[2]["tool_call_id"], "call-2");
     }
 
     // ─── anthropic_to_openai_responses_request ────────────────────────────────
