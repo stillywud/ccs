@@ -113,8 +113,11 @@ pub(crate) fn truncate_chars(s: &str, max: usize) -> String {
     }
 }
 
-pub(crate) fn truncate_error(e: &str) -> String {
-    const MAX: usize = 30;
+/// Truncate an error string to `max` display columns: keep the HTTP status
+/// and a sized slice of its detail (so a 429 rate-limit text stays actionable),
+/// and strip verbose reqwest chains down to their root cause.
+pub(crate) fn truncate_error_width(e: &str, max: usize) -> String {
+    let max = max.max(1);
 
     // HTML/XML body returned instead of JSON — not useful to display verbatim.
     let trimmed = e.trim_start();
@@ -124,28 +127,29 @@ pub(crate) fn truncate_error(e: &str) -> String {
 
     // Structured "HTTP <status>: <detail>" from test_latency: keep the status
     // and truncate the detail, so a 429 rate-limit text stays actionable.
+    // `status` is ASCII ("HTTP 400"), so chars == columns.
     if let Some((status, detail)) = e.split_once(": ")
         && status.starts_with("HTTP ")
     {
         let detail = detail.trim();
-        let room = MAX.saturating_sub(status.chars().count() + 2);
+        let room = max.saturating_sub(status.chars().count() + 2);
         return if room == 0 || detail.is_empty() {
             status.to_string()
         } else {
-            // truncate_chars appends "…" beyond max, so leave one char of room for it.
-            format!("{status}: {}", truncate_chars(detail, room - 1))
+            format!("{status}: {}", truncate_width(detail, room))
         };
     }
 
     // Strip verbose reqwest chain: "...: error sending request for url (...): <root cause>"
-    // Pick the last colon-separated segment that is short enough and not a URL.
+    // Pick the last colon-separated segment that isn't a URL; the winner is
+    // truncated to fit below, so a tight budget never picks a wrong segment.
     let msg: &str = e
         .split(": ")
-        .filter(|seg| !seg.starts_with("http") && seg.chars().count() <= MAX * 2)
+        .filter(|seg| !seg.starts_with("http"))
         .last()
-        .unwrap_or_else(|| e.split(':').next().unwrap_or(e));
+        .unwrap_or(e);
 
-    truncate_chars(msg, MAX)
+    truncate_width(msg, max)
 }
 
 pub(crate) fn fmt_latency(ms: u64) -> String {
@@ -254,12 +258,13 @@ pub(crate) fn shorten_model_name(model: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::truncate_error;
+    use super::truncate_error_width;
 
     #[test]
-    fn truncate_error_keeps_http_status_and_message() {
-        let out = truncate_error(
+    fn truncate_error_width_keeps_http_status_and_message() {
+        let out = truncate_error_width(
             "HTTP 429: You have exceeded the rate limit for this model. Please retry in 60 seconds.",
+            30,
         );
         assert!(out.starts_with("HTTP 429: You have exceeded"), "{out}");
         assert!(out.ends_with('…'), "{out}");
@@ -267,29 +272,61 @@ mod tests {
     }
 
     #[test]
-    fn truncate_error_short_status_without_detail_is_unchanged() {
-        assert_eq!(truncate_error("HTTP 502"), "HTTP 502");
+    fn truncate_error_width_short_status_without_detail_is_unchanged() {
+        assert_eq!(truncate_error_width("HTTP 502", 30), "HTTP 502");
     }
+
     #[test]
-    fn truncate_error_keeps_detail_starting_with_url() {
-        let out = truncate_error("HTTP 429: https://openrouter.ai/docs/rate-limits exceeded");
+    fn truncate_error_width_keeps_detail_starting_with_url() {
+        let out = truncate_error_width(
+            "HTTP 429: https://openrouter.ai/docs/rate-limits exceeded",
+            30,
+        );
         assert!(out.starts_with("HTTP 429: https://openrouter."), "{out}");
         assert!(out.chars().count() <= 30, "{out}");
     }
 
     #[test]
-    fn truncate_error_picks_last_reqwest_segment() {
+    fn truncate_error_width_picks_last_reqwest_segment() {
         assert_eq!(
-            truncate_error("error sending request for url (http://x): connection refused"),
+            truncate_error_width(
+                "error sending request for url (http://x): connection refused",
+                30
+            ),
             "connection refused"
         );
     }
 
     #[test]
-    fn truncate_error_marks_html_bodies() {
+    fn truncate_error_width_tight_budget_still_keeps_root_cause() {
+        // A narrow row must not fall back to the verbose reqwest prefix:
+        // the last non-URL segment wins regardless of the budget, and is
+        // then cut to fit ("connection refused" → "conn…").
+        let out = truncate_error_width(
+            "error sending request for url (http://x): connection refused",
+            5,
+        );
+        assert_eq!(out, "conn…", "{out}");
+    }
+
+    #[test]
+    fn truncate_error_width_marks_html_bodies() {
         assert_eq!(
-            truncate_error("<html><body>upstream down</body></html>"),
+            truncate_error_width("<html><body>upstream down</body></html>", 30),
             "non-JSON response (HTML/XML)"
         );
+    }
+
+    #[test]
+    fn truncate_error_width_wider_budget_shows_more_detail() {
+        let out = truncate_error_width(
+            "HTTP 400: Model 'fish-audio/s1-free' is not supported by this provider; choose one from the catalog.",
+            80,
+        );
+        assert!(
+            out.starts_with("HTTP 400: Model 'fish-audio/s1-free'"),
+            "{out}"
+        );
+        assert!(out.chars().count() <= 80, "{out}");
     }
 }

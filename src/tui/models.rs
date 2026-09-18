@@ -7,9 +7,11 @@
 
 use std::time::Instant;
 
+use unicode_width::UnicodeWidthStr;
+
 use super::state::{App, MessageKind, Mode};
 use super::theme::{self as t};
-use super::ui::format::{fmt_latency, truncate_error};
+use super::ui::format::{fmt_latency, truncate_error_width};
 use super::ui::layout::centered_fixed;
 use crate::tester::TestStatus;
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -281,6 +283,7 @@ pub(super) fn draw_popup(f: &mut Frame, app: &App) {
             Style::default().fg(t::MUTED),
         )));
     } else {
+        let list_width = chunks[2].width as usize;
         for (i, model) in models.iter().enumerate() {
             let is_selected = i == app.models.selected;
             let mut spans = if is_selected {
@@ -297,7 +300,7 @@ pub(super) fn draw_popup(f: &mut Frame, app: &App) {
                     Span::styled(model.to_string(), Style::default().fg(t::TEXT)),
                 ]
             };
-            spans.extend(model_result_suffix(app, prov_name, model));
+            spans.extend(model_result_suffix(app, prov_name, model, list_width));
             lines.push(Line::from(spans));
         }
     }
@@ -345,7 +348,14 @@ fn set_test_model(app: &mut App, provider_name: &str, model: &str) {
 }
 /// Suffix spans rendered after a model name: a live "Testing…" indicator or
 /// the last test result for that model (latency for OK, reason otherwise).
-fn model_result_suffix(app: &App, provider: &str, model: &str) -> Vec<Span<'static>> {
+/// `list_width` is the popup list's width; the error detail is truncated to
+/// the room left after the model name and the suffix's fixed prefix.
+fn model_result_suffix(
+    app: &App,
+    provider: &str,
+    model: &str,
+    list_width: usize,
+) -> Vec<Span<'static>> {
     // Only show the live indicator while a test is actually running; after
     // completion the row falls through to the stored result below.
     if app.tests.pending.contains(provider)
@@ -371,10 +381,16 @@ fn model_result_suffix(app: &App, provider: &str, model: &str) -> Vec<Span<'stat
             Style::default().fg(t::SUCCESS),
         )],
         TestStatus::AuthFailed => vec![Span::styled("  ✗ auth", Style::default().fg(t::ERROR))],
-        TestStatus::Error(e) => vec![Span::styled(
-            format!("  ✗ {}", truncate_error(e)),
-            Style::default().fg(t::ERROR),
-        )],
+        TestStatus::Error(e) => {
+            // Room left after the row's indentation, model name and "  ✗ "
+            // prefix; any "HTTP 123: " status is covered inside the budget.
+            let max = list_width.saturating_sub(model.width() + 8);
+            let msg = truncate_error_width(e, max);
+            vec![Span::styled(
+                format!("  ✗ {msg}"),
+                Style::default().fg(t::ERROR),
+            )]
+        }
     }
 }
 
