@@ -463,6 +463,30 @@ cargo test
 cargo clippy --all-targets --all-features
 ```
 
+### 探测路由走向
+
+`scripts/probe_servers.py` 在不同端口上起假上游。每个端口都会打印收到的请求，
+并在回复内容里写明是哪个端口服务的，所以你能直接看到 ccs 实际路由到了哪里。
+
+```bash
+python scripts/probe_servers.py 7901 7902
+```
+
+把 provider 指向这些端口，然后改 `~/.ccs/config.json` 里的 `current` ——
+正在运行的 `ccs serve` 会自动重载：
+
+```json
+"probe-7901": {
+  "base_url": "http://127.0.0.1:7901",
+  "api_key": "probe-key",
+  "api_format": "anthropic"
+}
+```
+
+客户端收到的回复是 `[ccs-probe] routed to p7901`，脚本的 stdout 会打印请求路径、
+模型名和是否流式。它支持 Anthropic Messages、OpenAI Chat Completions 和
+OpenAI Responses 三种协议，流式与非流式都有。只依赖 Python 标准库。
+
 ## License
 
 详见 LICENSE 文件。

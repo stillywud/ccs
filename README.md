@@ -463,6 +463,32 @@ cargo test
 cargo clippy --all-targets --all-features
 ```
 
+### Probe the routing path
+
+`scripts/probe_servers.py` starts fake upstreams on separate ports. Each one
+logs every request and replies with a marker naming the port that served it,
+so you can see which provider ccs actually routed to.
+
+```bash
+python scripts/probe_servers.py 7901 7902
+```
+
+Add providers pointing at those ports, then switch `current` in
+`~/.ccs/config.json` — a running `ccs serve` reloads it automatically:
+
+```json
+"probe-7901": {
+  "base_url": "http://127.0.0.1:7901",
+  "api_key": "probe-key",
+  "api_format": "anthropic"
+}
+```
+
+The client's reply reads `[ccs-probe] routed to p7901`, and the script's
+stdout logs the request path, model and stream flag. It answers Anthropic
+Messages, OpenAI Chat Completions and OpenAI Responses, in both streaming
+and non-streaming form. Requires only the Python standard library.
+
 ## License
 
 See LICENSE file for details.
