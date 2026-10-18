@@ -6,14 +6,15 @@ use super::state::{MessageKind, ServerStatus};
 
 /// Sync config to the running proxy. For the in-process server, sends the
 /// latest config through watch. For the background proxy, saves config to disk
-/// and sends SIGHUP to trigger a reload.
+/// (the reload trigger differs per platform: SIGHUP on Unix, a config-file
+/// watch inside the background process on Windows).
 pub(super) fn sync_proxy_config(app: &App, server: &Option<ServerHandle>) {
     if let Some(handle) = server {
         let _ = handle.config_tx.send(app.config.clone());
     } else if let Some(pid) = app.bg_proxy_pid {
         match crate::config::save_config(&app.config) {
             Ok(()) => super::state::send_sighup(pid),
-            Err(e) => tracing::error!("Failed to save config before SIGHUP: {e}"),
+            Err(e) => tracing::error!("Failed to save config before proxy reload: {e}"),
         }
     }
 }

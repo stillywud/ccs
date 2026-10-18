@@ -167,6 +167,103 @@ async fn stop_all_pinned(listeners: &mut PinnedListeners) {
     futures::future::join_all(handles).await;
 }
 
+/// Reload config from disk into the shared state and reconcile pinned
+/// listeners. `label` only tags the log lines (SIGHUP vs. file watch).
+async fn reload_from_disk(
+    label: &str,
+    shared_config: &Arc<RwLock<AppConfig>>,
+    pinned: &mut PinnedListeners,
+    host: &str,
+    base_state: &SharedState,
+) {
+    match crate::config::load_config() {
+        Ok(new_cfg) => {
+            let desired = {
+                let mut cfg = shared_config.write().await;
+                if cfg.listen != new_cfg.listen {
+                    tracing::warn!("{label}: listen address changed — restart required");
+                }
+                *cfg = new_cfg;
+                desired_pinned(&cfg)
+            };
+            tracing::info!("{label}: config reloaded");
+            reconcile_pinned(desired, pinned, host, base_state).await;
+        }
+        Err(e) => tracing::error!("{label}: failed to reload config: {e}"),
+    }
+}
+
+/// Watch `config.json` for changes so a detached `ccs serve` process picks up
+/// edits made by the TUI. Unix uses SIGHUP for this; on Windows there is no
+/// SIGHUP, so the file itself is watched instead.
+#[cfg(not(unix))]
+fn spawn_config_file_watcher(
+    shared_config: Arc<RwLock<AppConfig>>,
+    pinned: Arc<tokio::sync::Mutex<PinnedListeners>>,
+    host: String,
+    base_state: SharedState,
+) {
+    use notify::Watcher;
+
+    let Ok(path) = crate::config::config_path() else {
+        tracing::warn!("config watch disabled: cannot resolve config path");
+        return;
+    };
+    let Some(dir) = path.parent().map(|p| p.to_path_buf()) else {
+        tracing::warn!("config watch disabled: config path has no parent");
+        return;
+    };
+    let file_name = path.file_name().map(|n| n.to_os_string());
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<()>(1);
+
+    let mut watcher = match notify::recommended_watcher(
+        move |res: notify::Result<notify::Event>| {
+            let Ok(event) = res else { return };
+            // save_config writes a `.json.tmp` sibling and renames it over the
+            // target, so the interesting events are Create/Rename on the
+            // config path itself. Both are covered by `any` on the file name.
+            let relevant = event.paths.iter().any(|p| {
+                p.file_name()
+                    .zip(file_name.as_ref())
+                    .map(|(a, b)| a == b.as_os_str())
+                    .unwrap_or(false)
+            });
+            if relevant {
+                // try_send: a burst of events must not block the notify thread.
+                let _ = tx.try_send(());
+            }
+        },
+    ) {
+        Ok(w) => w,
+        Err(e) => {
+            tracing::warn!("config watch disabled: {e}");
+            return;
+        }
+    };
+    if let Err(e) = watcher.watch(&dir, notify::RecursiveMode::NonRecursive) {
+        tracing::warn!("config watch disabled: {e}");
+        return;
+    }
+
+    tokio::spawn(async move {
+        // Keep the watcher alive for the lifetime of the task.
+        let _watcher = watcher;
+        while rx.recv().await.is_some() {
+            // Debounce: save_config's tmp+rename can emit several events.
+            tokio::time::sleep(Duration::from_millis(120)).await;
+            while rx.try_recv().is_ok() {}
+            reload_from_disk(
+                "config watch",
+                &shared_config,
+                &mut *pinned.lock().await,
+                &host,
+                &base_state,
+            )
+            .await;
+        }
+    });
+}
+
 /// Start the proxy server (CLI mode, shuts down on Ctrl+C / SIGTERM).
 pub async fn start_server(config: AppConfig) -> crate::error::Result<()> {
     let listen = config.listen.clone();
@@ -196,7 +293,8 @@ pub async fn start_server(config: AppConfig) -> crate::error::Result<()> {
     )
     .await;
 
-    // Reload config from disk on SIGHUP so the TUI can signal changes.
+    // Reload config from disk so the TUI can signal changes: SIGHUP on Unix,
+    // a config-file watch on Windows (which has no SIGHUP).
     #[cfg(unix)]
     {
         let reload_config = shared_config;
@@ -207,25 +305,24 @@ pub async fn start_server(config: AppConfig) -> crate::error::Result<()> {
             let mut sig = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
                 .expect("Failed to install SIGHUP handler");
             while sig.recv().await.is_some() {
-                match crate::config::load_config() {
-                    Ok(new_cfg) => {
-                        let desired = {
-                            let mut cfg = reload_config.write().await;
-                            if cfg.listen != new_cfg.listen {
-                                tracing::warn!("SIGHUP: listen address changed — restart required");
-                            }
-                            *cfg = new_cfg;
-                            desired_pinned(&cfg)
-                        };
-                        tracing::info!("SIGHUP: config reloaded");
-                        reconcile_pinned(desired, &mut *pinned.lock().await, &host, &base_state)
-                            .await;
-                    }
-                    Err(e) => tracing::error!("SIGHUP: failed to reload config: {e}"),
-                }
+                reload_from_disk(
+                    "SIGHUP",
+                    &reload_config,
+                    &mut *pinned.lock().await,
+                    &host,
+                    &base_state,
+                )
+                .await;
             }
         });
     }
+    #[cfg(not(unix))]
+    spawn_config_file_watcher(
+        shared_config.clone(),
+        pinned.clone(),
+        host.clone(),
+        base_state.clone(),
+    );
 
     let listener = tokio::net::TcpListener::bind(&listen).await?;
     tracing::info!("CCS proxy listening on {listen}");
@@ -336,4 +433,143 @@ async fn shutdown_signal() {
     }
 
     tracing::info!("Shutdown signal received");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::ApiFormat;
+    use crate::config::test_support::ConfigDirGuard;
+
+    /// Points `CCS_CONFIG_DIR` at a temp dir for the test's lifetime. Shares
+    /// the crate-wide lock in `config::test_support`, so it cannot race other
+    /// tests that read or write config.
+    struct TempConfigDir {
+        guard: ConfigDirGuard,
+    }
+
+    impl TempConfigDir {
+        fn new() -> Self {
+            Self {
+                guard: ConfigDirGuard::new(),
+            }
+        }
+
+        fn write(&self, cfg: &AppConfig) {
+            let path = self.guard.dir().join("config.json");
+            std::fs::write(&path, serde_json::to_string_pretty(cfg).unwrap()).unwrap();
+        }
+
+        fn write_raw(&self, body: &str) {
+            std::fs::write(self.guard.dir().join("config.json"), body).unwrap();
+        }
+    }
+
+    fn provider(base_url: &str, format: ApiFormat) -> crate::config::Provider {
+        crate::config::Provider {
+            id: "test-id".into(),
+            base_url: base_url.into(),
+            api_key: "key".into(),
+            api_format: format,
+            model_map: Default::default(),
+            routes: Vec::new(),
+            enabled: true,
+            fallback: true,
+            api_version: None,
+            inject_thinking_history: true,
+            strict_thinking_history: false,
+            quota_command: None,
+            port: None,
+            test_model: None,
+            max_tokens_cap: None,
+            extra_headers: Default::default(),
+        }
+    }
+
+    fn config_with(current: &str) -> AppConfig {
+        let mut cfg = AppConfig {
+            current: current.into(),
+            listen: "127.0.0.1:0".into(),
+            providers: Default::default(),
+            db_path: None,
+            request_log_limit: 100,
+        };
+        cfg.providers
+            .insert("a".into(), provider("https://a.example.com", ApiFormat::Anthropic));
+        cfg.providers
+            .insert("b".into(), provider("https://b.example.com", ApiFormat::OpenAI));
+        cfg
+    }
+
+    /// The shared state the reload path writes into. `reload_from_disk` needs a
+    /// full `SharedState` for pinned-listener reconciliation, so build one with
+    /// an empty pinned set (no listener is spawned because no provider has a
+    /// `port`).
+    fn shared_state(cfg: &AppConfig) -> SharedState {
+        Arc::new(AppState {
+            config: Arc::new(RwLock::new(cfg.clone())),
+            http_client: build_http_client(),
+            metrics: Arc::new(std::sync::Mutex::new(metrics::TokenMetrics::default())),
+            request_log: Arc::new(std::sync::Mutex::new(metrics::RequestLog::default())),
+            db: crate::repo::Repository::open(":memory:"),
+            pinned_provider: None,
+        })
+    }
+
+    /// A config edited on disk must be picked up by the reload path — this is
+    /// what the Windows file watcher and the Unix SIGHUP handler both invoke,
+    /// so the assertion covers the `ccs serve` background-process bug where a
+    /// TUI-side provider switch never reached the running proxy.
+    #[tokio::test]
+    async fn reload_from_disk_picks_up_switched_provider() {
+        let dir = TempConfigDir::new();
+        let initial = config_with("a");
+        dir.write(&initial);
+
+        let state = shared_state(&initial);
+        let mut pinned: PinnedListeners = HashMap::new();
+
+        // Simulate the TUI switching `current` and saving.
+        dir.write(&config_with("b"));
+
+        reload_from_disk(
+            "test",
+            &state.config,
+            &mut pinned,
+            "127.0.0.1",
+            &state,
+        )
+        .await;
+
+        let cfg = state.config.read().await;
+        assert_eq!(cfg.current, "b", "reload must apply the on-disk current provider");
+        assert_eq!(cfg.providers.len(), 2);
+    }
+
+    /// A malformed config must not clobber the live one: the reload logs and
+    /// keeps serving with the previous providers.
+    #[tokio::test]
+    async fn reload_from_disk_keeps_old_config_on_parse_error() {
+        let dir = TempConfigDir::new();
+        let initial = config_with("a");
+        dir.write(&initial);
+
+        let state = shared_state(&initial);
+        let mut pinned: PinnedListeners = HashMap::new();
+
+        dir.write_raw("{ not json");
+
+        reload_from_disk(
+            "test",
+            &state.config,
+            &mut pinned,
+            "127.0.0.1",
+            &state,
+        )
+        .await;
+
+        let cfg = state.config.read().await;
+        assert_eq!(cfg.current, "a", "a bad config must leave the live one intact");
+        assert_eq!(cfg.providers.len(), 2);
+    }
 }

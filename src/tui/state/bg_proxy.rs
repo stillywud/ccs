@@ -106,7 +106,13 @@ pub fn kill_process(pid: u32) {
 }
 
 pub fn send_sighup(pid: u32) {
+    // Windows has no SIGHUP; there the background proxy watches config.json
+    // itself, so writing the file is the whole handshake and `kill` must not
+    // be invoked (the bundled `kill` would just fail noisily).
+    #[cfg(unix)]
     send_signal(pid, "-HUP");
+    #[cfg(not(unix))]
+    let _ = pid;
 }
 /// Health-endpoint URL for a background proxy listening at `listen`.
 /// `0.0.0.0` is rewritten to `127.0.0.1` so the probe can connect.

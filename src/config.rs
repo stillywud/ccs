@@ -591,9 +591,11 @@ fn default_config() -> AppConfig {
 /// test to silently overwrite a real `~/.ccs/config.json`.
 #[cfg(test)]
 pub(crate) mod test_support {
+    use std::path::PathBuf;
     use std::sync::Mutex;
 
     pub struct ConfigDirGuard {
+        dir: PathBuf,
         _lock: std::sync::MutexGuard<'static, ()>,
     }
 
@@ -606,7 +608,16 @@ pub(crate) mod test_support {
             // SAFETY: serialized by `_lock` — no other test can be
             // reading/writing CCS_CONFIG_DIR while this guard is alive.
             unsafe { std::env::set_var("CCS_CONFIG_DIR", &dir) };
-            Self { _lock }
+            Self {
+                dir: PathBuf::from(dir),
+                _lock,
+            }
+        }
+
+        /// The temp directory `CCS_CONFIG_DIR` currently points at, so a test
+        /// can write or corrupt `config.json` directly.
+        pub fn dir(&self) -> &std::path::Path {
+            &self.dir
         }
     }
 
@@ -620,6 +631,7 @@ pub(crate) mod test_support {
         fn drop(&mut self) {
             // SAFETY: see ConfigDirGuard::new.
             unsafe { std::env::remove_var("CCS_CONFIG_DIR") };
+            let _ = std::fs::remove_dir_all(&self.dir);
         }
     }
 }
